@@ -140,7 +140,8 @@ def show():
         st.caption("No imports yet.")
 
     # ── Manual trade entry ────────────────────────────────────────────────────
-    with st.expander("➕ Add Trade Manually"):
+    has_prefill = "manual_trade_prefill" in st.session_state
+    with st.expander("➕ Add Trade Manually", expanded=has_prefill):
         _manual_trade_form()
 
 
@@ -266,17 +267,33 @@ def _manual_trade_form():
     from utils.accounts import get_accounts
     accounts = get_accounts()
 
+    # Prefill handed over from the Risk Calculator's "Add as trade" button
+    prefill = st.session_state.pop("manual_trade_prefill", None) or {}
+    if prefill:
+        st.info(f"Pre-filled from Risk Calculator: **{prefill.get('symbol','')}** "
+                f"{prefill.get('direction','')} × {prefill.get('quantity',0):g} "
+                f"@ {prefill.get('entry_price',0):.4f}")
+
     with st.form("manual_trade"):
         acc_options = {"— No account —": None} | {f"{a['name']}  ({a['broker']})": a["id"] for a in accounts}
-        sel_acc = st.selectbox("Account", list(acc_options.keys()), key="manual_acc")
+        acc_keys = list(acc_options.keys())
+        acc_default = 0
+        if prefill.get("account_id"):
+            acc_default = next((i for i, k in enumerate(acc_keys)
+                                if acc_options[k] == prefill["account_id"]), 0)
+        sel_acc = st.selectbox("Account", acc_keys, index=acc_default, key="manual_acc")
 
         c1, c2, c3 = st.columns(3)
-        symbol    = c1.text_input("Symbol", placeholder="e.g. BHP / AAPL / EURUSD")
-        direction = c2.selectbox("Direction", ["LONG", "SHORT"])
-        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=0.01, value=1.0)
+        symbol    = c1.text_input("Symbol", value=prefill.get("symbol", ""),
+                                  placeholder="e.g. BHP / AAPL / EURUSD")
+        direction = c2.selectbox("Direction", ["LONG", "SHORT"],
+                                 index=1 if prefill.get("direction") == "SHORT" else 0)
+        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=0.01,
+                                    value=float(prefill.get("quantity") or 1.0))
 
         c4, c5 = st.columns(2)
-        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.00001, format="%.5f")
+        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.00001, format="%.5f",
+                                      value=float(prefill.get("entry_price") or 0.0))
         exit_price  = c5.number_input("Exit Price (0 = still open)", min_value=0.0, step=0.00001, format="%.5f")
 
         c6, c7 = st.columns(2)

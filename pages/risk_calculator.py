@@ -40,13 +40,45 @@ def _position_sizer():
     from utils.accounts import get_accounts
     accounts = get_accounts()
 
+    # ── Saved setups — load one back to revisit later ─────────────────────────
+    saved = fetch_all("SELECT * FROM risk_setups ORDER BY created_at DESC LIMIT 50")
+    if saved:
+        with st.expander(f"📂 Saved setups ({len(saved)})"):
+            def setup_label(sid):
+                s = next(x for x in saved if x["id"] == sid)
+                note = f"  · {s['note'][:30]}" if s.get("note") else ""
+                return (f"{(s['created_at'] or '')[:10]}  {s['ticker']} {s['direction']}  "
+                        f"{s['shares']:g} @ {s['entry_price']:.4f}  (stop {s['stop_price']:.4f}, "
+                        f"{s['risk_pct']:.1f}%){note}")
+            sel_id = st.selectbox("Setup", [s["id"] for s in saved],
+                                  format_func=setup_label, key="rc_saved_sel")
+            cl, cd, _ = st.columns([1, 1, 3])
+            if cl.button("📥 Load", key="rc_load_btn", use_container_width=True):
+                s = next(x for x in saved if x["id"] == sel_id)
+                st.session_state["rc_loaded"] = dict(s)
+                # Drop widget state so loaded values become the new defaults
+                for k in ("rc_ticker", "rc_entry", "rc_stop", "rc_dir",
+                          "rc_account", "rc_risk", "rc_balance", "rc_live_price"):
+                    st.session_state.pop(k, None)
+                st.session_state["rc_live_sym"] = s["ticker"]
+                st.rerun()
+            if cd.button("🗑️ Delete", key="rc_del_btn", use_container_width=True):
+                execute("DELETE FROM risk_setups WHERE id=?", (sel_id,))
+                st.rerun()
+
+    loaded = st.session_state.get("rc_loaded") or {}
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Account**")
         acc_obj = None
         if accounts:
             acc_names = [f"{a['name']}  ({a['broker']})" for a in accounts]
-            acc_idx = st.selectbox("Account", range(len(acc_names)),
+            acc_default = 0
+            if loaded.get("account_id"):
+                acc_default = next((i for i, a in enumerate(accounts)
+                                    if a["id"] == loaded["account_id"]), 0)
+            acc_idx = st.selectbox("Account", range(len(acc_names)), index=acc_default,
                                    format_func=lambda i: acc_names[i], key="rc_account")
             acc_obj = accounts[acc_idx]
             default_bal = float(acc_obj.get("initial_balance") or 0) or 10000.0
@@ -55,7 +87,8 @@ def _position_sizer():
         account_balance = st.number_input("Balance ($)", value=default_bal,
                                            min_value=100.0, step=100.0, key="rc_balance")
         risk_pct    = st.slider("Risk per trade (%)", 0.1, 5.0,
-                                 value=float(settings.get("risk_pct", 1.0)), step=0.1, format="%.1f%%")
+                                 value=float(loaded.get("risk_pct") or settings.get("risk_pct", 1.0)),
+                                 step=0.1, format="%.1f%%", key="rc_risk")
         risk_amount = account_balance * risk_pct / 100
         st.metric("Risk Amount ($)", f"{risk_amount:,.2f}")
 
@@ -63,7 +96,8 @@ def _position_sizer():
         st.markdown("**Trade Setup**")
         tc1, tc2 = st.columns([2, 1])
         with tc1:
-            ticker = st.text_input("Ticker", placeholder="BHP.AX / AAPL / VAS.AX", key="rc_ticker")
+            ticker = st.text_input("Ticker", value=loaded.get("ticker", ""),
+                                   placeholder="BHP.AX / AAPL / VAS.AX", key="rc_ticker")
         with tc2:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
             fetch_clicked = st.button("📡 Get price", key="rc_fetch", use_container_width=True)
@@ -87,11 +121,16 @@ def _position_sizer():
         if live_price:
             st.caption(f"Live: **{st.session_state.get('rc_live_sym','')} {live_price:,.2f}**")
 
-        entry_price = st.number_input("Entry Price", value=float(live_price) if live_price else 10.00,
+        default_entry = float(loaded.get("entry_price") or (live_price if live_price else 10.00))
+        default_stop  = float(loaded.get("stop_price") or
+                              round((float(live_price) if live_price else 10.0) * 0.95, 4))
+        entry_price = st.number_input("Entry Price", value=default_entry,
                                        min_value=0.0, step=0.01, format="%.4f", key="rc_entry")
-        stop_price  = st.number_input("Stop Loss Price", value=round((float(live_price) if live_price else 10.0) * 0.95, 4),
+        stop_price  = st.number_input("Stop Loss Price", value=default_stop,
                                        min_value=0.0, step=0.01, format="%.4f", key="rc_stop")
-        direction   = st.selectbox("Direction", ["LONG", "SHORT"], key="rc_dir")
+        direction   = st.selectbox("Direction", ["LONG", "SHORT"],
+                                   index=1 if loaded.get("direction") == "SHORT" else 0,
+                                   key="rc_dir")
 
     if entry_price <= 0 or stop_price <= 0 or entry_price == stop_price:
         st.warning("Enter a valid entry and stop price.")
@@ -103,12 +142,46 @@ def _position_sizer():
     pos_pct = position_value / account_balance * 100 if account_balance else 0
 
     st.divider()
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
     c1.metric("Position Size", f"{shares:,} shares")
     c2.metric("Position Value", f"${position_value:,.2f}")
     c3.metric("% of Account", f"{pos_pct:.1f}%")
+    with c4:
+        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+        if st.button("➕ Add as trade", use_container_width=True,
+                     help="Open Add Trade with these values pre-filled"):
+            st.session_state["manual_trade_prefill"] = {
+                "symbol": (st.session_state.get("rc_live_sym") or ticker or "").strip().upper(),
+                "direction": direction,
+                "quantity": float(shares),
+                "entry_price": float(entry_price),
+                "account_id": acc_obj["id"] if acc_obj else None,
+            }
+            st.session_state["page"] = "import_trades"
+            st.rerun()
     if pos_pct > 100:
         st.warning("Position value exceeds account balance — stop is too tight for this risk % without leverage.")
+
+    # ── Save setup for later (capital constraints etc.) ───────────────────────
+    sc1, sc2 = st.columns([3, 1])
+    with sc1:
+        setup_note = st.text_input("Note (optional)", key="rc_setup_note",
+                                   placeholder="e.g. waiting on capital from SPYI exit")
+    with sc2:
+        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+        if st.button("💾 Save Setup", key="rc_save_setup", use_container_width=True,
+                     disabled=not (ticker.strip() or st.session_state.get("rc_live_sym"))):
+            sym = (st.session_state.get("rc_live_sym") or ticker or "").strip().upper()
+            execute(
+                """INSERT INTO risk_setups
+                   (ticker, direction, entry_price, stop_price, risk_pct, balance,
+                    account_id, shares, note)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (sym, direction, entry_price, stop_price, risk_pct, account_balance,
+                 acc_obj["id"] if acc_obj else None, shares, setup_note.strip() or None),
+            )
+            st.success(f"Setup saved: {sym} {direction} {shares:,} @ {entry_price:.4f} — "
+                       f"load it from 📂 Saved setups any time.")
 
     # ── Create pre-trade journal entry ────────────────────────────────────────
     st.divider()

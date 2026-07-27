@@ -191,6 +191,23 @@ def init_db():
         )
     """)
 
+    # Saved risk-calculator setups (revisit when capital frees up)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS risk_setups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            direction TEXT DEFAULT 'LONG',
+            entry_price REAL,
+            stop_price REAL,
+            risk_pct REAL,
+            balance REAL,
+            account_id INTEGER,
+            shares REAL,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     conn.commit()
     _run_migrations(conn)
     conn.close()
