@@ -1,0 +1,13 @@
+streamlit>=1.32.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.18.0
+sqlalchemy>=2.0.0
+yfinance>=0.2.40
+
+# Optional - MT5 connection (Windows only)
+# MetaTrader5>=5.0.45
+
+# Optional - cloud AI analysis (local LLM via Ollama/LM Studio needs no package)
+# openai>=1.0.0
+# anthropic>=0.20.0

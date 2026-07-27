@@ -1,0 +1,12 @@
+[server]
+headless = true
+port = 8502
+
+[client]
+showSidebarNavigation = false
+[theme]
+base = "dark"
+primaryColor = "#00c896"
+backgroundColor = "#0a0c10"
+secondaryBackgroundColor = "#131720"
+textColor = "#e8eaf0"

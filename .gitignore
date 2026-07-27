@@ -1,0 +1,24 @@
+# Personal trading data — NEVER commit (contains trades, journal entries,
+# account balances, FTP credentials and API keys stored in app_settings)
+data/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local tooling / editor
+.claude/
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Broker exports accidentally dropped into the project
+*.csv
+Statement_*.csv
