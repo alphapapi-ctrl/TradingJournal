@@ -17,15 +17,30 @@ from utils.trade_ops import (
 from utils.playbook_logic import get_playbooks, get_playbook, evaluate_trade_risk
 
 
-def show():
-    st.header("🔍 Trade Detail")
+def show(embedded=False):
+    if not embedded:
+        st.header("🔍 Trade Detail")
 
-    trades = get_trades(limit=500)
+    from utils.accounts import get_accounts
+    accounts = get_accounts()
+    acc_options = {"All Accounts": None} | {a["name"]: a["id"] for a in accounts}
+
+    col_acc, col1, col2 = st.columns([1, 3, 1])
+    with col_acc:
+        sel_acc = st.selectbox("Account", list(acc_options.keys()), key="td_account")
+        account_id = acc_options[sel_acc]
+
+    if account_id:
+        trades = fetch_all(
+            "SELECT * FROM trades WHERE account_id=? ORDER BY entry_time DESC LIMIT 500",
+            (account_id,),
+        )
+    else:
+        trades = get_trades(limit=500)
     if not trades:
-        st.info("No trades found. Import trades first.")
+        st.info("No trades found for this account.")
         return
 
-    col1, col2 = st.columns([3, 1])
     with col1:
         def trade_label(x):
             t = next((t for t in trades if t["id"] == x), None)

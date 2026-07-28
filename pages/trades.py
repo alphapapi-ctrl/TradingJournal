@@ -15,11 +15,40 @@ from utils.trade_ops import (
 from utils.playbook_logic import get_playbooks, get_playbook, evaluate_trade_risk
 
 
+def _js_switch_tab(index: int):
+    import streamlit.components.v1 as _c
+    _c.html(
+        f"""<script>
+        setTimeout(function(){{
+            var tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+            if (tabs[{index}]) tabs[{index}].click();
+        }}, 120);
+        </script>""",
+        height=0, scrolling=False,
+    )
+
+
 def show():
     st.header("📋 Trades")
-    tab_trades, tab_positions = st.tabs(["Individual Trades", "Positions (Merged)"])
-    with tab_trades:   _show_trades()
+    tab_calc, tab_add, tab_list, tab_positions, tab_detail = st.tabs([
+        "⚖️ Risk Calculator", "➕ Add Trade", "🔗 Link Trade", "🧩 Positions", "🔍 Trade Detail"
+    ])
+
+    # Tab indices: 0=Risk Calc, 1=Add Trade, 2=Link Trade, 3=Positions, 4=Trade Detail
+    if "_trades_pending_tab" in st.session_state:
+        _js_switch_tab(st.session_state.pop("_trades_pending_tab"))
+
+    with tab_calc:
+        from pages.risk_calculator import show as rc_show
+        rc_show(embedded=True)
+    with tab_add:
+        from pages.import_trades import show as it_show
+        it_show(embedded=True)
+    with tab_list:      _show_trades()
     with tab_positions: _show_positions()
+    with tab_detail:
+        from pages.trade_detail import show as td_show
+        td_show(embedded=True)
 
 
 def _show_trades():
@@ -244,17 +273,101 @@ def _show_trades():
             st.rerun()
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _quote_stats(symbol: str, exchange_hint: str):
+    """Live quote + day/week change for a symbol. Returns dict or None."""
+    import yfinance as yf
+    sym = symbol.strip().upper()
+    if "." in sym:
+        candidates = [sym]
+    elif exchange_hint.upper() in ("ASX", "AU"):
+        candidates = [f"{sym}.AX", sym]
+    else:
+        candidates = [sym, f"{sym}.AX"]
+    for cand in candidates:
+        try:
+            h = yf.Ticker(cand).history(period="15d")
+            if h is None or h.empty:
+                continue
+            close = h["Close"]
+            last = float(close.iloc[-1])
+            prev = float(close.iloc[-2]) if len(close) >= 2 else last
+            week = float(close.iloc[-6]) if len(close) >= 6 else float(close.iloc[0])
+            return {"sym": cand, "last": last,
+                    "day_chg": last - prev, "day_pct": (last / prev - 1) * 100 if prev else 0,
+                    "week_chg": last - week, "week_pct": (last / week - 1) * 100 if week else 0}
+        except Exception:
+            continue
+    return None
+
+
+def _exchange_hint(raw_data) -> str:
+    try:
+        d = json.loads(raw_data) if raw_data else None
+        if isinstance(d, dict):
+            return d.get("exchange", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _position_live_metrics(symbol, hint, open_qty, avg_entry, direction,
+                           realized_pnl, risk_base, is_open):
+    """Render Last / Day / Week / Current P&L / R metric row for a position."""
+    sign = 1 if direction == "LONG" else -1
+    q = _quote_stats(symbol, hint) if is_open else None
+
+    current_pnl = realized_pnl
+    if q and is_open and open_qty:
+        current_pnl = realized_pnl + (q["last"] - avg_entry) * open_qty * sign
+
+    r_val = current_pnl / risk_base if risk_base else None
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    if q:
+        m1.metric("Last", f"{q['last']:,.4f}")
+        m2.metric("Day", f"{q['day_pct']:+.2f}%",
+                  delta=f"{q['day_chg'] * open_qty * sign:+,.2f}" if open_qty else None)
+        m3.metric("Week", f"{q['week_pct']:+.2f}%",
+                  delta=f"{q['week_chg'] * open_qty * sign:+,.2f}" if open_qty else None)
+    else:
+        m1.metric("Last", "—")
+        m2.metric("Day", "—")
+        m3.metric("Week", "—")
+    m4.metric("Current P&L", f"{current_pnl:+,.2f}",
+              help="Realized + unrealized at last price" if is_open else "Realized")
+    m5.metric("R", f"{r_val:+.2f}R" if r_val is not None else "—",
+              help="P&L ÷ (account balance × default risk %) — your standard 1R")
+
+
 def _show_positions():
+    from utils.accounts import get_accounts
+    accounts = get_accounts()
+    acc_opts = {"All Accounts": None} | {a["name"]: a["id"] for a in accounts}
+    fc1, _ = st.columns([2, 4])
+    sel_acc = fc1.selectbox("Account", list(acc_opts.keys()), key="pos_acc")
+    account_id = acc_opts[sel_acc]
+
     positions = get_positions()
-    if not positions:
-        st.info("No positions yet. Merge trades from the Trades tab.")
-        return
+    # Filter merged positions by account via their constituent trades
+    if account_id and positions:
+        pos_ids_in_acc = {r["position_id"] for r in fetch_all(
+            "SELECT DISTINCT position_id FROM trades WHERE account_id=? AND position_id IS NOT NULL",
+            (account_id,))}
+        positions = [p for p in positions if p["id"] in pos_ids_in_acc]
 
     pb_all = get_playbooks()
     pb_by_id   = {pb["id"]: pb["name"] for pb in pb_all}
     pb_name_id = {pb["name"]: pb["id"] for pb in pb_all}
     pb_select_opts = ["— None —"] + [pb["name"] for pb in pb_all]
 
+    # 1R base = account balance × default risk %
+    settings = {r["key"]: r["value"] for r in fetch_all("SELECT key, value FROM app_settings")}
+    risk_pct = float(settings.get("risk_pct", 1.0))
+    acc_bal  = {a["id"]: float(a.get("initial_balance") or 0) for a in accounts}
+
+    if positions:
+        st.markdown(f"**Merged positions ({len(positions)})**")
     for pos in positions:
         pnl   = pos.get("total_pnl", 0) or 0
         icon  = "🟢" if pnl >= 0 else "🔴"
@@ -268,6 +381,22 @@ def _show_positions():
             c4.metric("Net P&L",    f"{pnl:+.2f}")
 
             sub_trades = fetch_all("SELECT * FROM trades WHERE position_id=?", (pos["id"],))
+
+            # Live metrics: last price, day/week gain, current P&L, R
+            if sub_trades:
+                is_open  = any(s["status"] == "open" for s in sub_trades)
+                open_qty = sum(float(s.get("quantity") or 0) for s in sub_trades
+                               if s["status"] == "open")
+                hint     = _exchange_hint(sub_trades[0].get("raw_data"))
+                acct_id  = sub_trades[0].get("account_id")
+                risk_base = (acc_bal.get(acct_id) or 0) * risk_pct / 100
+                _position_live_metrics(
+                    pos["symbol"], hint, open_qty,
+                    float(pos.get("avg_entry_price") or 0), pos["direction"],
+                    float(pos.get("total_pnl") or 0), risk_base, is_open,
+                )
+                st.divider()
+
             if sub_trades:
                 st.caption(f"**{len(sub_trades)} trades in this position:**")
                 sub_df = pd.DataFrame(sub_trades)
@@ -303,4 +432,63 @@ def _show_positions():
 
             if st.button(f"Unmerge #{pos['id']}", key=f"unmerge_{pos['id']}"):
                 unmerge_position(pos["id"])
+                st.rerun()
+
+    # ── Single-entry trades (not part of a merged position) ──────────────────
+    single_where = "position_id IS NULL"
+    single_params = []
+    if account_id:
+        single_where += " AND account_id=?"
+        single_params.append(account_id)
+    singles = fetch_all(
+        f"SELECT * FROM trades WHERE {single_where} ORDER BY entry_time DESC LIMIT 100",
+        single_params,
+    )
+
+    if not positions and not singles:
+        st.info("No positions or trades for this account yet.")
+        return
+
+    if singles:
+        st.markdown(f"**Single-entry positions ({len(singles)})**")
+    for t in singles:
+        pnl  = float(t.get("pnl") or 0)
+        icon = "🔓" if t["status"] == "open" else ("🟢" if pnl >= 0 else "🔴")
+        pnl_txt = "open" if t["status"] == "open" else f"P&L: {pnl:+.2f}"
+        pb_name = pb_by_id.get(t.get("playbook_id"), "")
+        pb_label = f" · 📖 {pb_name}" if pb_name else ""
+        with st.expander(f"{icon} Trade #{t['id']} — {t['symbol']} {t['direction']} | {pnl_txt}{pb_label}"):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Entry", f"{float(t.get('entry_price') or 0):.4f}" if t.get("entry_price") else "—")
+            c2.metric("Exit",  f"{float(t.get('exit_price') or 0):.4f}"  if t.get("exit_price")  else "Open")
+            c3.metric("Qty",   f"{float(t.get('quantity') or 0):g}")
+            c4.metric("Net P&L", f"{pnl - abs(float(t.get('commission') or 0)):+.2f}"
+                                 if t["status"] == "closed" else "—")
+
+            is_open = t["status"] == "open"
+            net_realized = pnl - abs(float(t.get("commission") or 0))
+            risk_base = (acc_bal.get(t.get("account_id")) or 0) * risk_pct / 100
+            _position_live_metrics(
+                t["symbol"], _exchange_hint(t.get("raw_data")),
+                float(t.get("quantity") or 0) if is_open else 0,
+                float(t.get("entry_price") or 0), t["direction"],
+                net_realized if not is_open else 0.0, risk_base, is_open,
+            )
+            st.caption(f"{(t.get('entry_time') or '—')[:10]} → {(t.get('exit_time') or 'open')[:10]}"
+                       f" · {t.get('broker', '')}")
+
+            sc1, sc2 = st.columns(2)
+            # Playbook assignment for the single trade
+            cur_name = pb_name if pb_name in pb_select_opts else "— None —"
+            new_name = sc1.selectbox("Playbook", pb_select_opts,
+                                     index=pb_select_opts.index(cur_name),
+                                     key=f"single_pb_{t['id']}", label_visibility="collapsed")
+            if sc1.button("Apply playbook", key=f"single_pb_apply_{t['id']}"):
+                from database import execute as _execute
+                _execute("UPDATE trades SET playbook_id=?, updated_at=datetime('now') WHERE id=?",
+                         (pb_name_id.get(new_name), t["id"]))
+                st.rerun()
+            if sc2.button("🔍 Open in Trade Detail", key=f"single_detail_{t['id']}"):
+                st.session_state["detail_trade_id"] = t["id"]
+                st.session_state["_trades_pending_tab"] = 4  # Trade Detail tab
                 st.rerun()

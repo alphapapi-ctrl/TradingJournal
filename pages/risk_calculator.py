@@ -24,8 +24,9 @@ CHART_STYLE = dict(
 )
 
 
-def show():
-    st.header("⚖️ Risk Calculator")
+def show(embedded=False):
+    if not embedded:
+        st.header("⚖️ Risk Calculator")
     tab_pos, tab_kelly = st.tabs(["📐 Position Size", "🎲 Kelly Criterion"])
     with tab_pos:   _position_sizer()
     with tab_kelly: _kelly_criterion()
@@ -55,18 +56,35 @@ def _position_sizer():
             cl, cd, _ = st.columns([1, 1, 3])
             if cl.button("📥 Load", key="rc_load_btn", use_container_width=True):
                 s = next(x for x in saved if x["id"] == sel_id)
-                st.session_state["rc_loaded"] = dict(s)
-                # Drop widget state so loaded values become the new defaults
-                for k in ("rc_ticker", "rc_entry", "rc_stop", "rc_dir",
-                          "rc_account", "rc_risk", "rc_balance", "rc_live_price"):
-                    st.session_state.pop(k, None)
+                # Write straight into widget state — survives any later rerun
+                st.session_state["rc_ticker"] = s["ticker"] or ""
+                st.session_state["rc_entry"]  = float(s["entry_price"] or 0)
+                st.session_state["rc_stop"]   = float(s["stop_price"] or 0)
+                st.session_state["rc_dir"]    = s["direction"] or "LONG"
+                st.session_state["rc_risk"]   = float(s["risk_pct"] or 1.0)
+                st.session_state["rc_balance"] = float(s["balance"] or 10000.0)
+                if s.get("account_id") and accounts:
+                    st.session_state["rc_account"] = next(
+                        (i for i, a in enumerate(accounts) if a["id"] == s["account_id"]), 0)
+                st.session_state.pop("rc_live_price", None)
                 st.session_state["rc_live_sym"] = s["ticker"]
                 st.rerun()
             if cd.button("🗑️ Delete", key="rc_del_btn", use_container_width=True):
                 execute("DELETE FROM risk_setups WHERE id=?", (sel_id,))
                 st.rerun()
 
-    loaded = st.session_state.get("rc_loaded") or {}
+    # ── Initialise widget state once (all inputs are session-state driven) ───
+    init_defaults = {
+        "rc_ticker": "",
+        "rc_entry": 10.00,
+        "rc_stop": 9.50,
+        "rc_dir": "LONG",
+        "rc_risk": float(settings.get("risk_pct", 1.0)),
+        "rc_account": 0,
+    }
+    for k, v in init_defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
     col1, col2 = st.columns(2)
     with col1:
@@ -74,20 +92,19 @@ def _position_sizer():
         acc_obj = None
         if accounts:
             acc_names = [f"{a['name']}  ({a['broker']})" for a in accounts]
-            acc_default = 0
-            if loaded.get("account_id"):
-                acc_default = next((i for i, a in enumerate(accounts)
-                                    if a["id"] == loaded["account_id"]), 0)
-            acc_idx = st.selectbox("Account", range(len(acc_names)), index=acc_default,
+            if st.session_state["rc_account"] >= len(accounts):
+                st.session_state["rc_account"] = 0
+            acc_idx = st.selectbox("Account", range(len(acc_names)),
                                    format_func=lambda i: acc_names[i], key="rc_account")
             acc_obj = accounts[acc_idx]
             default_bal = float(acc_obj.get("initial_balance") or 0) or 10000.0
         else:
             default_bal = float(settings.get("account_balance", 10000))
-        account_balance = st.number_input("Balance ($)", value=default_bal,
-                                           min_value=100.0, step=100.0, key="rc_balance")
+        if "rc_balance" not in st.session_state:
+            st.session_state["rc_balance"] = default_bal
+        account_balance = st.number_input("Balance ($)", min_value=100.0, step=100.0,
+                                          key="rc_balance")
         risk_pct    = st.slider("Risk per trade (%)", 0.1, 5.0,
-                                 value=float(loaded.get("risk_pct") or settings.get("risk_pct", 1.0)),
                                  step=0.1, format="%.1f%%", key="rc_risk")
         risk_amount = account_balance * risk_pct / 100
         st.metric("Risk Amount ($)", f"{risk_amount:,.2f}")
@@ -96,8 +113,8 @@ def _position_sizer():
         st.markdown("**Trade Setup**")
         tc1, tc2 = st.columns([2, 1])
         with tc1:
-            ticker = st.text_input("Ticker", value=loaded.get("ticker", ""),
-                                   placeholder="BHP.AX / AAPL / VAS.AX", key="rc_ticker")
+            ticker = st.text_input("Ticker", placeholder="BHP.AX / AAPL / VAS.AX",
+                                   key="rc_ticker")
         with tc2:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
             fetch_clicked = st.button("📡 Get price", key="rc_fetch", use_container_width=True)
@@ -114,23 +131,22 @@ def _position_sizer():
                 live = float(hist["Close"].iloc[-1])
                 st.session_state["rc_live_price"] = live
                 st.session_state["rc_live_sym"] = yf_sym
+                # Push the live price into the entry/stop inputs
+                st.session_state["rc_entry"] = round(live, 4)
+                st.session_state["rc_stop"]  = round(live * 0.95, 4)
             except Exception as e:
                 st.error(f"Could not fetch price for {ticker}: {e}")
 
         live_price = st.session_state.get("rc_live_price")
         if live_price:
-            st.caption(f"Live: **{st.session_state.get('rc_live_sym','')} {live_price:,.2f}**")
+            st.caption(f"Live: **{st.session_state.get('rc_live_sym','')} {live_price:,.2f}** "
+                       f"(entry/stop pre-filled — stop at −5%)")
 
-        default_entry = float(loaded.get("entry_price") or (live_price if live_price else 10.00))
-        default_stop  = float(loaded.get("stop_price") or
-                              round((float(live_price) if live_price else 10.0) * 0.95, 4))
-        entry_price = st.number_input("Entry Price", value=default_entry,
-                                       min_value=0.0, step=0.01, format="%.4f", key="rc_entry")
-        stop_price  = st.number_input("Stop Loss Price", value=default_stop,
-                                       min_value=0.0, step=0.01, format="%.4f", key="rc_stop")
-        direction   = st.selectbox("Direction", ["LONG", "SHORT"],
-                                   index=1 if loaded.get("direction") == "SHORT" else 0,
-                                   key="rc_dir")
+        entry_price = st.number_input("Entry Price", min_value=0.0, step=0.01,
+                                      format="%.4f", key="rc_entry")
+        stop_price  = st.number_input("Stop Loss Price", min_value=0.0, step=0.01,
+                                      format="%.4f", key="rc_stop")
+        direction   = st.selectbox("Direction", ["LONG", "SHORT"], key="rc_dir")
 
     if entry_price <= 0 or stop_price <= 0 or entry_price == stop_price:
         st.warning("Enter a valid entry and stop price.")
@@ -149,7 +165,7 @@ def _position_sizer():
     with c4:
         st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
         if st.button("➕ Add as trade", use_container_width=True,
-                     help="Open Add Trade with these values pre-filled"):
+                     help="Open the Add Trade tab with these values pre-filled"):
             st.session_state["manual_trade_prefill"] = {
                 "symbol": (st.session_state.get("rc_live_sym") or ticker or "").strip().upper(),
                 "direction": direction,
@@ -157,7 +173,8 @@ def _position_sizer():
                 "entry_price": float(entry_price),
                 "account_id": acc_obj["id"] if acc_obj else None,
             }
-            st.session_state["page"] = "import_trades"
+            st.session_state["page"] = "trades"
+            st.session_state["_trades_pending_tab"] = 1  # Add Trade tab
             st.rerun()
     if pos_pct > 100:
         st.warning("Position value exceeds account balance — stop is too tight for this risk % without leverage.")

@@ -37,10 +37,7 @@ st.markdown(f"<style>{get_full_css(_current_theme)}</style>", unsafe_allow_html=
 PAGES = {
     "📔  Journal":          "journal",
     "🔬  Stock Analysis":   "stock_analysis",
-    "⚖️  Risk Calculator":  "risk_calculator",
-    "➕  Add Trade":        "import_trades",
     "📋  Trades":           "trades",
-    "🔍  Trade Detail":     "trade_detail",
     "📊  Reports":          "statistics",
     "📖  Playbook":         "playbooks",
     "⚙️  Settings":         "settings",
@@ -111,11 +108,17 @@ page = st.session_state.get("page", "dashboard")
 if page == "dashboard":
     from pages.dashboard import show; show()
 elif page == "import_trades":
-    from pages.import_trades import show; show()
+    # Consolidated into the Trades page (Add Trade tab)
+    st.session_state["page"] = "trades"
+    st.session_state["_trades_pending_tab"] = 1
+    from pages.trades import show; show()
 elif page == "trades":
     from pages.trades import show; show()
 elif page == "trade_detail":
-    from pages.trade_detail import show; show()
+    # Consolidated into the Trades page (Trade Detail tab)
+    st.session_state["page"] = "trades"
+    st.session_state["_trades_pending_tab"] = 4
+    from pages.trades import show; show()
 elif page == "stock_analysis":
     from pages.stock_analysis import show; show()
 elif page == "playbooks":
@@ -125,7 +128,9 @@ elif page == "journal":
 elif page == "statistics":
     from pages.statistics import show; show()
 elif page == "risk_calculator":
-    from pages.risk_calculator import show; show()
+    # Consolidated into the Trades page (Risk Calculator tab)
+    st.session_state["page"] = "trades"
+    from pages.trades import show; show()
 elif page == "settings":
     from pages.settings import show; show()
 else:

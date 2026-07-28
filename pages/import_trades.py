@@ -55,8 +55,15 @@ _Stocks (ASX + US), Options included. Forex currency conversions are skipped._
 }
 
 
-def show():
-    st.header("➕ Add Trade")
+def show(embedded=False):
+    if not embedded:
+        st.header("➕ Add Trade")
+
+    # Save confirmation — shown at page level so it's never hidden in a collapsed expander
+    saved_msg = st.session_state.pop("manual_trade_saved", None)
+    if saved_msg:
+        st.success(saved_msg)
+        st.session_state["_manual_keep_open"] = True
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -140,8 +147,11 @@ def show():
         st.caption("No imports yet.")
 
     # ── Manual trade entry ────────────────────────────────────────────────────
-    has_prefill = "manual_trade_prefill" in st.session_state
-    with st.expander("➕ Add Trade Manually", expanded=has_prefill):
+    keep_open = (
+        "manual_trade_prefill" in st.session_state or
+        st.session_state.pop("_manual_keep_open", False)
+    )
+    with st.expander("➕ Add Trade Manually", expanded=keep_open):
         _manual_trade_form()
 
 
@@ -265,6 +275,7 @@ def _show_import_preview(trades: list, broker: str, filename: str, account_id=No
 
 def _manual_trade_form():
     from utils.accounts import get_accounts
+    from datetime import date as _date
     accounts = get_accounts()
 
     # Prefill handed over from the Risk Calculator's "Add as trade" button
@@ -273,6 +284,10 @@ def _manual_trade_form():
         st.info(f"Pre-filled from Risk Calculator: **{prefill.get('symbol','')}** "
                 f"{prefill.get('direction','')} × {prefill.get('quantity',0):g} "
                 f"@ {prefill.get('entry_price',0):.4f}")
+
+    # Status lives OUTSIDE the form so exit fields can show/hide immediately
+    status = st.selectbox("Status", ["Open", "Closed"], index=0, key="manual_status",
+                          help="Open positions need no exit details")
 
     with st.form("manual_trade"):
         acc_options = {"— No account —": None} | {f"{a['name']}  ({a['broker']})": a["id"] for a in accounts}
@@ -285,44 +300,65 @@ def _manual_trade_form():
 
         c1, c2, c3 = st.columns(3)
         symbol    = c1.text_input("Symbol", value=prefill.get("symbol", ""),
-                                  placeholder="e.g. BHP / AAPL / EURUSD")
+                                  placeholder="e.g. BHP / AAPL / VAS.AX")
         direction = c2.selectbox("Direction", ["LONG", "SHORT"],
                                  index=1 if prefill.get("direction") == "SHORT" else 0)
-        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=0.01,
+        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=1.0,
                                     value=float(prefill.get("quantity") or 1.0))
 
         c4, c5 = st.columns(2)
-        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.00001, format="%.5f",
+        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.01, format="%.4f",
                                       value=float(prefill.get("entry_price") or 0.0))
-        exit_price  = c5.number_input("Exit Price (0 = still open)", min_value=0.0, step=0.00001, format="%.5f")
+        entry_date  = c5.date_input("Entry Date", value=_date.today())
 
-        c6, c7 = st.columns(2)
-        entry_time = c6.text_input("Entry Time", placeholder="2024-01-15 09:30:00")
-        exit_time  = c7.text_input("Exit Time",  placeholder="2024-01-15 11:45:00")
+        if status == "Closed":
+            c6, c7, c8 = st.columns(3)
+            exit_price = c6.number_input("Exit Price", min_value=0.0, step=0.01, format="%.4f")
+            exit_date  = c7.date_input("Exit Date", value=_date.today())
+            pnl        = c8.number_input("P&L (0 = auto from prices)", step=0.01)
+        else:
+            exit_price, exit_date, pnl = 0.0, _date.today(), 0.0
 
-        c8, c9, c10 = st.columns(3)
-        pnl        = c8.number_input("P&L",        step=0.01)
+        c9, c10 = st.columns(2)
         commission = c9.number_input("Commission", step=0.01)
-        swap       = c10.number_input("Swap",      step=0.01)
+        swap       = c10.number_input("Swap", step=0.01)
 
         if st.form_submit_button("Add Trade", type="primary"):
-            if not symbol:
+            if not symbol.strip():
                 st.error("Symbol is required")
+            elif entry_price <= 0:
+                st.error("Entry price is required")
+            elif status == "Closed" and exit_price <= 0:
+                st.error("Closed trades need an exit price")
             else:
+                is_closed = status == "Closed"
+                trade_pnl = pnl
+                if is_closed and pnl == 0:
+                    sign = 1 if direction == "LONG" else -1
+                    trade_pnl = round((exit_price - entry_price) * quantity * sign, 4)
                 trade = {
                     "broker": "Manual", "broker_trade_id": None,
-                    "symbol": symbol.upper(), "direction": direction,
-                    "entry_price": entry_price or None,
-                    "exit_price":  exit_price  or None,
-                    "entry_time":  entry_time  or None,
-                    "exit_time":   exit_time   or None,
-                    "quantity": quantity, "pnl": pnl,
+                    "symbol": symbol.strip().upper(), "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price":  exit_price if is_closed else None,
+                    "entry_time":  str(entry_date),
+                    "exit_time":   str(exit_date) if is_closed else None,
+                    "quantity": quantity, "pnl": trade_pnl if is_closed else 0,
                     "commission": commission, "swap": swap, "raw_data": None,
-                    "status": "closed" if exit_price > 0 else "open",
+                    "status": "closed" if is_closed else "open",
                 }
                 acc_id = acc_options.get(sel_acc)
                 if acc_id:
                     trade["account_id"] = acc_id
-                upsert_trade_from_broker(trade)
-                st.success("Trade added!")
+                try:
+                    tid, _ = upsert_trade_from_broker(trade)
+                except Exception as ex:
+                    import traceback
+                    st.error(f"Save failed: {ex}")
+                    st.code(traceback.format_exc())
+                    return
+                st.session_state["manual_trade_saved"] = (
+                    f"✅ Trade #{tid} saved: {trade['symbol']} {direction} "
+                    f"{quantity:g} @ {entry_price:.4f} ({trade['status']}, {entry_date})"
+                )
                 st.rerun()
