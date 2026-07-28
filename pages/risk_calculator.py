@@ -164,18 +164,38 @@ def _position_sizer():
     c3.metric("% of Account", f"{pos_pct:.1f}%")
     with c4:
         st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-        if st.button("➕ Add as trade", use_container_width=True,
-                     help="Open the Add Trade tab with these values pre-filled"):
-            st.session_state["manual_trade_prefill"] = {
-                "symbol": (st.session_state.get("rc_live_sym") or ticker or "").strip().upper(),
-                "direction": direction,
-                "quantity": float(shares),
-                "entry_price": float(entry_price),
-                "account_id": acc_obj["id"] if acc_obj else None,
-            }
-            st.session_state["page"] = "trades"
-            st.session_state["_trades_pending_tab"] = 1  # Add Trade tab
-            st.rerun()
+        if st.button("➕ Create open trade", use_container_width=True, type="primary",
+                     help="Creates the trade immediately (open, entry today) — no form needed",
+                     disabled=shares <= 0):
+            from utils.trade_ops import upsert_trade_from_broker
+            from datetime import date as _date
+            sym = (st.session_state.get("rc_live_sym") or ticker or "").strip().upper()
+            if not sym:
+                st.error("Enter a ticker first.")
+            else:
+                try:
+                    tid, _ = upsert_trade_from_broker({
+                        "broker": "Manual", "broker_trade_id": None,
+                        "symbol": sym, "direction": direction,
+                        "entry_price": float(entry_price), "exit_price": None,
+                        "entry_time": str(_date.today()), "exit_time": None,
+                        "quantity": float(shares), "pnl": 0,
+                        "commission": 0, "swap": 0, "raw_data": None,
+                        "status": "open",
+                        "account_id": acc_obj["id"] if acc_obj else None,
+                    })
+                    st.session_state["rc_trade_created"] = (
+                        f"✅ Trade #{tid} created: {sym} {direction} {shares:,} @ "
+                        f"{entry_price:.4f} — open, entry {_date.today()}. "
+                        f"See it in the Positions tab."
+                    )
+                except Exception as ex:
+                    import traceback
+                    st.error(f"Create failed: {ex}")
+                    st.code(traceback.format_exc())
+
+    if st.session_state.get("rc_trade_created"):
+        st.success(st.session_state.pop("rc_trade_created"))
     if pos_pct > 100:
         st.warning("Position value exceeds account balance — stop is too tight for this risk % without leverage.")
 

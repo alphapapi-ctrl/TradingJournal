@@ -147,11 +147,8 @@ def show(embedded=False):
         st.caption("No imports yet.")
 
     # ── Manual trade entry ────────────────────────────────────────────────────
-    keep_open = (
-        "manual_trade_prefill" in st.session_state or
-        st.session_state.pop("_manual_keep_open", False)
-    )
-    with st.expander("➕ Add Trade Manually", expanded=keep_open):
+    st.session_state.pop("_manual_keep_open", None)
+    with st.expander("➕ Add Trade Manually", expanded=True):
         _manual_trade_form()
 
 
@@ -277,51 +274,73 @@ def _manual_trade_form():
     from utils.accounts import get_accounts
     from datetime import date as _date
     accounts = get_accounts()
+    acc_options = {"— No account —": None} | {f"{a['name']}  ({a['broker']})": a["id"] for a in accounts}
+    acc_keys = list(acc_options.keys())
 
-    # Prefill handed over from the Risk Calculator's "Add as trade" button
-    prefill = st.session_state.pop("manual_trade_prefill", None) or {}
+    mt_defaults = {
+        "mt_symbol": "", "mt_dir": "LONG", "mt_qty": 1.0, "mt_entry": 0.0,
+        "mt_entry_date": _date.today(), "mt_exit": 0.0, "mt_exit_date": _date.today(),
+        "mt_pnl": 0.0, "mt_comm": 0.0, "mt_swap": 0.0,
+    }
+
+    # Reset form after a successful save (deferred — widget keys can't be
+    # reassigned in the same run their widgets rendered)
+    if st.session_state.pop("_mt_clear", False):
+        for k in mt_defaults:
+            st.session_state.pop(k, None)
+
+    # Prefill from the Risk Calculator — written straight into widget state so
+    # it survives every rerun until the trade is saved
+    prefill = st.session_state.pop("manual_trade_prefill", None)
     if prefill:
-        st.info(f"Pre-filled from Risk Calculator: **{prefill.get('symbol','')}** "
-                f"{prefill.get('direction','')} × {prefill.get('quantity',0):g} "
-                f"@ {prefill.get('entry_price',0):.4f}")
+        st.session_state["mt_symbol"] = prefill.get("symbol", "")
+        st.session_state["mt_dir"]    = prefill.get("direction", "LONG")
+        st.session_state["mt_qty"]    = float(prefill.get("quantity") or 1.0)
+        st.session_state["mt_entry"]  = float(prefill.get("entry_price") or 0.0)
+        if prefill.get("account_id"):
+            label = next((k for k in acc_keys if acc_options[k] == prefill["account_id"]),
+                         acc_keys[0])
+            st.session_state["manual_acc"] = label
+
+    # Initialise any missing widget state
+    for k, v in mt_defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    if st.session_state.get("mt_symbol"):
+        st.caption(f"Editing: **{st.session_state['mt_symbol']}** "
+                   f"{st.session_state.get('mt_dir','')} × {st.session_state.get('mt_qty',0):g}")
 
     # Status lives OUTSIDE the form so exit fields can show/hide immediately
-    status = st.selectbox("Status", ["Open", "Closed"], index=0, key="manual_status",
+    status = st.selectbox("Status", ["Open", "Closed"], key="manual_status",
                           help="Open positions need no exit details")
 
     with st.form("manual_trade"):
-        acc_options = {"— No account —": None} | {f"{a['name']}  ({a['broker']})": a["id"] for a in accounts}
-        acc_keys = list(acc_options.keys())
-        acc_default = 0
-        if prefill.get("account_id"):
-            acc_default = next((i for i, k in enumerate(acc_keys)
-                                if acc_options[k] == prefill["account_id"]), 0)
-        sel_acc = st.selectbox("Account", acc_keys, index=acc_default, key="manual_acc")
+        sel_acc = st.selectbox("Account", acc_keys, key="manual_acc")
 
         c1, c2, c3 = st.columns(3)
-        symbol    = c1.text_input("Symbol", value=prefill.get("symbol", ""),
+        symbol    = c1.text_input("Symbol", key="mt_symbol",
                                   placeholder="e.g. BHP / AAPL / VAS.AX")
-        direction = c2.selectbox("Direction", ["LONG", "SHORT"],
-                                 index=1 if prefill.get("direction") == "SHORT" else 0)
-        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=1.0,
-                                    value=float(prefill.get("quantity") or 1.0))
+        direction = c2.selectbox("Direction", ["LONG", "SHORT"], key="mt_dir")
+        quantity  = c3.number_input("Quantity / Shares", min_value=0.0, step=1.0, key="mt_qty")
 
         c4, c5 = st.columns(2)
-        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.01, format="%.4f",
-                                      value=float(prefill.get("entry_price") or 0.0))
-        entry_date  = c5.date_input("Entry Date", value=_date.today())
+        entry_price = c4.number_input("Entry Price", min_value=0.0, step=0.01,
+                                      format="%.4f", key="mt_entry")
+        entry_date  = c5.date_input("Entry Date", key="mt_entry_date")
 
         if status == "Closed":
             c6, c7, c8 = st.columns(3)
-            exit_price = c6.number_input("Exit Price", min_value=0.0, step=0.01, format="%.4f")
-            exit_date  = c7.date_input("Exit Date", value=_date.today())
-            pnl        = c8.number_input("P&L (0 = auto from prices)", step=0.01)
+            exit_price = c6.number_input("Exit Price", min_value=0.0, step=0.01,
+                                         format="%.4f", key="mt_exit")
+            exit_date  = c7.date_input("Exit Date", key="mt_exit_date")
+            pnl        = c8.number_input("P&L (0 = auto from prices)", step=0.01, key="mt_pnl")
         else:
             exit_price, exit_date, pnl = 0.0, _date.today(), 0.0
 
         c9, c10 = st.columns(2)
-        commission = c9.number_input("Commission", step=0.01)
-        swap       = c10.number_input("Swap", step=0.01)
+        commission = c9.number_input("Commission", step=0.01, key="mt_comm")
+        swap       = c10.number_input("Swap", step=0.01, key="mt_swap")
 
         if st.form_submit_button("Add Trade", type="primary"):
             if not symbol.strip():
@@ -361,4 +380,5 @@ def _manual_trade_form():
                     f"✅ Trade #{tid} saved: {trade['symbol']} {direction} "
                     f"{quantity:g} @ {entry_price:.4f} ({trade['status']}, {entry_date})"
                 )
+                st.session_state["_mt_clear"] = True
                 st.rerun()
