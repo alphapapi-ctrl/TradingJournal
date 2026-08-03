@@ -853,6 +853,10 @@
     S.sessionStart = args.session_start || null;
     S.vprofile = args.vprofile || null;
     document.body.classList.toggle("replay", S.mode === "replay");
+    // hard override too — a reused iframe must never show playback controls
+    // on a static (reference) chart
+    const rc = document.getElementById("replay-controls");
+    if (rc) rc.style.display = S.mode === "replay" ? "flex" : "none";
     applyToolbarTheme();
 
     if (fullInit) {

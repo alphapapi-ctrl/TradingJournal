@@ -30,14 +30,18 @@ INDICATOR_CHOICES = {
 
 STRATEGIES = {
     "Key levels (default)": {"setup": False, "orb": False,
-                             "levels": ["Prior session H/L", "Prior close", "Overnight H/L"]},
+                             "levels": ["Prior session H/L", "Prior close", "Overnight H/L",
+                                        "VP (prior day full)"]},
     "School Run": {"setup": True, "orb": False,
-                   "levels": ["Setup entry/stop", "Prior session H/L", "Overnight H/L"]},
+                   "levels": ["Setup entry/stop", "Prior session H/L", "Overnight H/L",
+                              "VP (prior day full)"]},
     "Custom ORB": {"setup": True, "orb": True,
-                   "levels": ["Setup entry/stop", "Prior session H/L", "Overnight H/L"]},
+                   "levels": ["Setup entry/stop", "Prior session H/L", "Overnight H/L",
+                              "VP (prior day full)"]},
 }
 
-LEVEL_CHOICES = ["Setup entry/stop", "Prior session H/L", "Prior close", "Overnight H/L"]
+LEVEL_CHOICES = ["Setup entry/stop", "Prior session H/L", "Prior close", "Overnight H/L",
+                 "VP (prior day full)", "VP (prior session)"]
 
 
 def show():
@@ -295,18 +299,45 @@ def _scanner_tab(instrument: str, strat: dict, orb_window: int,
                     _result_card(f, i, instrument, strat)
 
     with col_chart:
-        c1, c2, c3, c4 = st.columns([1.2, 1, 1.6, 1.6])
+        # ◀ ▶ day navigation lands here BEFORE the Day widget is created
+        # (a widget's session-state key cannot be written after instantiation)
+        pending = st.session_state.pop("_ref_day_pending", None)
+        if pending in days:
+            st.session_state["ref_day"] = pending
+            st.session_state["ref_day_select"] = pending
+
+        c1, cprev, cnext, c2, c3, c4 = st.columns([1.2, 0.35, 0.35, 0.9, 1.5, 1.5])
         with c1:
-            default_day = st.session_state.get("ref_day", days[-1])
+            default_day = st.session_state.get("ref_day")
             if default_day not in days:
-                default_day = days[-1]
+                # newest day with an indexed session — sliver days at the data
+                # edge (overnight only) have no levels/features to show
+                from database import fetch_all
+                indexed = {r["date"] for r in fetch_all(
+                    "SELECT date FROM day_features WHERE instrument=?", (instrument,))}
+                default_day = next((d for d in reversed(days) if d in indexed), days[-1])
                 st.session_state.pop("ref_day_select", None)
             day = st.selectbox("Day", days, index=days.index(default_day), key="ref_day_select")
             st.session_state["ref_day"] = day
+        with cprev:
+            st.write("")
+            if st.button("◀", key="ref_prev", use_container_width=True,
+                         help="Previous day", disabled=days.index(day) == 0):
+                st.session_state["_ref_day_pending"] = days[days.index(day) - 1]
+                st.rerun()
+        with cnext:
+            st.write("")
+            if st.button("▶", key="ref_next", use_container_width=True,
+                         help="Next day", disabled=days.index(day) >= len(days) - 1):
+                st.session_state["_ref_day_pending"] = days[days.index(day) + 1]
+                st.rerun()
         with c2:
             session_only = st.toggle("Session only", value=True, key="ref_session_only",
                                      help=f"Clip to the focus session ({sess_label}). "
                                           "Off = whole day.")
+            show_ctx = st.toggle("Prior day", value=True, key="ref_prior_ctx",
+                                 help="Prepend the whole prior day (incl. overnight "
+                                      "through to the open) like the Replay chart.")
         with c3:
             inds = st.multiselect("Indicators", list(INDICATOR_CHOICES), key="ref_indicators")
         with c4:
@@ -323,14 +354,57 @@ def _scanner_tab(instrument: str, strat: dict, orb_window: int,
                     + (f" in the {sess_label} window — try 'Session only' off."
                        if focus_arg and session_only else "."))
             return
+
+        # Prior-day context (same as Replay): whole prior day + this day's
+        # bars up to the start of the displayed window.
+        import pandas as pd
+        idx = days.index(day)
+        prior_day = days[idx - 1] if idx > 0 else None
+        ctx_bars = None
+        if show_ctx and prior_day:
+            parts = []
+            pb = md.get_day_bars(prior_day, session_only=False, instrument=instrument)
+            if not pb.empty:
+                parts.append(pb)
+            if session_only:
+                win_start, _ = md.session_bounds(day, instrument, focus_arg)
+                pre = md.get_day_bars(day, session_only=False, instrument=instrument)
+                pre = pre[pre.index < win_start.astimezone(md.pytz.UTC)]
+                if not pre.empty:
+                    parts.append(pre)
+            ctx_bars = pd.concat(parts) if parts else None
+        lwc_ctx = md.bars_to_lwc(ctx_bars, instrument) if ctx_bars is not None else []
+
+        # Volume profile overlay (scope like Replay: full prior day vs session)
+        vprofile = None
+        vp_src = None
+        if "VP (prior session)" in level_sel and prior_day:
+            vp_src = md.get_day_bars(prior_day, session_only=True, instrument=instrument)
+        elif "VP (prior day full)" in level_sel and prior_day:
+            vp_src = ctx_bars if ctx_bars is not None else \
+                md.get_day_bars(prior_day, session_only=False, instrument=instrument)
+        vp_lines = []
+        if vp_src is not None and not vp_src.empty:
+            vp = md.volume_profile(vp_src)
+            anchor_bars = lwc_ctx or md.bars_to_lwc(vp_src, instrument)
+            if vp and anchor_bars:
+                vprofile = {"bins": vp["bins"], "anchor_time": anchor_bars[0]["time"]}
+                vp_lines = [
+                    {"price": vp["poc"], "title": "POC", "color": "#ffb340", "style": "solid", "width": 2},
+                    {"price": vp["vah"], "title": "VAH", "color": "#8b93a6", "style": "dashed"},
+                    {"price": vp["val"], "title": "VAL", "color": "#8b93a6", "style": "dashed"},
+                ]
+
         event = lwchart(
-            bars_1m=md.bars_to_lwc(bars, instrument),
+            bars_1m=lwc_ctx + md.bars_to_lwc(bars, instrument),
             data_key=f"{instrument}:{day}:{'sess' if session_only else 'day'}"
-                     f":{orb_window}:{sess_label}",
+                     f":{orb_window}:{sess_label}:{int(show_ctx)}",
             mode="static",
             colors=chart_colors(),
             indicators=[INDICATOR_CHOICES[i] for i in inds],
-            levels=_levels_for(feats, level_sel, strat, day, instrument, orb_window) if feats else [],
+            levels=(_levels_for(feats, level_sel, strat, day, instrument, orb_window)
+                    if feats else []) + vp_lines,
+            vprofile=vprofile,
             ack=st.session_state.get("ref_shot_seq", 0),
             session_start=md.session_start_epoch(day, instrument, focus_arg),
             default_tf=5,
