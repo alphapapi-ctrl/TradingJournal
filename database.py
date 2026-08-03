@@ -208,6 +208,47 @@ def init_db():
         )
     """)
 
+    # Per-day strategy features for the DAX Reference scanner (built from
+    # School Run App 1-min parquet caches; see utils/day_index.py)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS day_features (
+            date TEXT NOT NULL,
+            instrument TEXT NOT NULL DEFAULT 'DEUIDXEUR',
+            session_open REAL, session_close REAL,
+            session_high REAL, session_low REAL,
+            prior_high REAL, prior_low REAL, prior_close REAL,
+            overnight_high REAL, overnight_low REAL,
+            gap_pts REAL, gap_pct REAL, gap_dir TEXT,
+            gap_closed INTEGER, gap_close_time TEXT,
+            open_vs_prior TEXT, open_vs_onr TEXT,
+            b1_o REAL, b1_h REAL, b1_l REAL, b1_c REAL, b1_type TEXT,
+            b2_o REAL, b2_h REAL, b2_l REAL, b2_c REAL, b2_type TEXT,
+            b2_rel_b1 TEXT,
+            sr_long_entry REAL, sr_long_stop REAL,
+            sr_short_entry REAL, sr_short_stop REAL,
+            news_flags TEXT,
+            computed_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (date, instrument)
+        )
+    """)
+
+    # Saved replay-trainer sessions (resume a day mid-replay)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS replay_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            instrument TEXT NOT NULL,
+            day TEXT NOT NULL,
+            cursor INTEGER DEFAULT 0,
+            sub_step INTEGER DEFAULT 0,
+            speed REAL DEFAULT 10,
+            pending_orders TEXT,          -- JSON list of working orders
+            status TEXT DEFAULT 'active', -- active / archived
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     conn.commit()
     _run_migrations(conn)
     conn.close()
@@ -240,6 +281,13 @@ def _run_migrations(conn):
         ("journal_entries",     "pre_body_state",       "TEXT"),     # somatic check-in
         ("journal_entries",     "pre_accuracy_check",   "TEXT"),     # accurate vs making money
         ("journal_entries",     "pre_risk_type",        "TEXT"),     # smart vs sloppy risk
+        ("trades",              "stop_price",           "REAL"),     # replay trainer
+        ("trades",              "take_profit",          "REAL"),
+        ("trades",              "planned_risk",         "REAL"),     # $ at risk at entry
+        ("trades",              "r_multiple",           "REAL"),
+        ("trades",              "is_replay",            "INTEGER DEFAULT 0"),
+        ("trades",              "replay_day",           "TEXT"),     # historical day being replayed
+        ("replay_sessions",     "account_id",           "INTEGER"),  # per-session demo account
     ]
     for table, col, col_def in migrations:
         try:

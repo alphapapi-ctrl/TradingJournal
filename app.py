@@ -40,6 +40,8 @@ PAGES = {
     "📋  Trades":           "trades",
     "📊  Reports":          "statistics",
     "📖  Playbook":         "playbooks",
+    "🎓  Reference":        "reference",
+    "⏪  Replay":           "replay",
     "⚙️  Settings":         "settings",
 }
 
@@ -131,6 +133,10 @@ elif page == "risk_calculator":
     # Consolidated into the Trades page (Risk Calculator tab)
     st.session_state["page"] = "trades"
     from pages.trades import show; show()
+elif page == "reference":
+    from pages.reference import show; show()
+elif page == "replay":
+    from pages.replay import show; show()
 elif page == "settings":
     from pages.settings import show; show()
 else:

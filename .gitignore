@@ -1,6 +1,10 @@
 # Personal trading data — NEVER commit (contains trades, journal entries,
 # account balances, FTP credentials and API keys stored in app_settings)
-data/
+data/*
+# ...but shipped reference data (news calendar) IS committed
+!data/reference/
+data/reference/*
+!data/reference/us_news_events.csv
 
 # Python
 .venv/
@@ -22,3 +26,4 @@ Thumbs.db
 # Broker exports accidentally dropped into the project
 *.csv
 Statement_*.csv
+!data/reference/us_news_events.csv

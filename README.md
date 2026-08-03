@@ -28,10 +28,39 @@ live open P&L (including dividends) and process-compliance reporting.
 
 ## Getting Started
 
+**Easiest:** double-click `launch.bat` (or the *Trading Journal* desktop shortcut —
+create it once with `powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1`).
+It starts the app from the repo venv and opens your browser; if the app is already
+running it just opens the browser.
+
+Manual start:
+
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## DAX Reference & Replay Trainer
+
+Two discretionary-trading modules built on the School Run App tick/parquet caches:
+
+- **🎓 DAX Reference** — browse historical DAX days with strategy filters
+  (gap size/direction, gap-closed-in-hindsight, open vs prior session / overnight
+  range, 1st/2nd 15-min bar construction, CPI/NFP/FOMC news days). Filtered days
+  appear as mini-chart cards; click one to load it on a multi-timeframe
+  (1/5/15m) chart with school-run entry/stop levels and a day-info box.
+  The **Data** tab points at the School Run App data folder, runs cache updates,
+  rebuilds the day index and holds candle color settings.
+- **⏪ Replay Trainer** — bar-by-bar replay (pause/play, speed, skip, next/random
+  day) with simulated trading: position-size calculator (fixed € or %-of-balance
+  compounding), market/stop/limit orders with draggable entry/SL/TP lines,
+  partial/full closes, automatic SL/TP fills, R-multiple tracking and chart
+  screenshots. Trades are written to a **Replay Demo** account so they show up
+  in Reports, Journal and Playbooks like any other account.
+
+News calendar dates (2016–2026) were sourced from bls.gov / federalreserve.gov;
+edit `data/reference/us_news_events.csv` to extend (regenerate with
+`scripts/build_news_csv.py`).
 
 A local SQLite database is created at `data/journal.db` on first run.
 All data stays on your machine — the `data/` directory is git-ignored because it contains
