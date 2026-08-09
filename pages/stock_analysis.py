@@ -12,9 +12,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import fetch_all
 from utils.theme import get_theme, _PALETTES
+from datetime import date
+
 from utils.stock_data import (
     resolve_yf_symbol, fetch_history, fetch_info,
     compute_technicals, fundamental_checks,
+    load_substantial_holders, refresh_substantial_holders, substantial_holders_path,
+    substantial_holders_last_run, backfill_substantial_holders,
 )
 
 _STATUS_ICON = {"pass": "🟢", "warn": "🟡", "fail": "🔴", "na": "⚪"}
@@ -32,6 +36,12 @@ def _cached_history(yf_sym: str, period: str, interval: str):
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_info(yf_sym: str):
     return fetch_info(yf_sym)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_sh_backfill(base_ticker: str):
+    """Merge ~6 months of this company's substantial-holder notices into the history."""
+    return backfill_substantial_holders(base_ticker)
 
 
 def _exchange_hint_for(symbol: str) -> str:
@@ -57,6 +67,19 @@ def show():
     st.caption("Forward-test companion — real market data via yfinance. "
                "Technical read follows the Wyckoff strategy (EMA 21/50, SMA 200, volume, OBV); "
                "fundamentals are a crude Buffett/Burry value prequalification.")
+
+    # ── Substantial holders freshness note ────────────────────────────────────
+    sh_last = substantial_holders_last_run()
+    if sh_last is None or sh_last.date() < date.today():
+        c_note, c_btn = st.columns([4, 1])
+        last_txt = "never" if sh_last is None else sh_last.strftime("%Y-%m-%d %H:%M")
+        c_note.warning(f"📢 Substantial holders scan hasn't been run today (last run: {last_txt}).")
+        if c_btn.button("🔄 Run now", key="sh_run_top", use_container_width=True):
+            with st.spinner("Fetching ASX substantial holder notices…"):
+                ok, out = refresh_substantial_holders()
+            if ok:
+                st.rerun()
+            st.error(f"Fetch failed: {out[-400:] if out else 'no output'}")
 
     # ── Ticker selection ──────────────────────────────────────────────────────
     imported = fetch_all(
@@ -132,7 +155,11 @@ def show():
     m4.metric("vs SMA 200", f"{(tech['price']/tech['sma200']-1)*100:+.1f}%" if tech["sma200"] else "—")
     m5.metric("Off 52w High", f"{tech['pct_off_52w_high']:+.1f}%")
 
-    tab_tech, tab_fund = st.tabs(["📐 Technical", "🏛️ Fundamental"])
+    is_asx = yf_sym.upper().endswith(".AX")
+    if is_asx:
+        tab_tech, tab_fund, tab_sh = st.tabs(["📐 Technical", "🏛️ Fundamental", "📢 Substantial Holders"])
+    else:
+        tab_tech, tab_fund = st.tabs(["📐 Technical", "🏛️ Fundamental"])
 
     with tab_tech:
         _technical_tab(tech, daily, p)
@@ -142,6 +169,10 @@ def show():
             _etf_fundamental_tab(info, p)
         else:
             _fundamental_tab(info, p)
+
+    if is_asx:
+        with tab_sh:
+            _substantial_holders_tab(yf_sym, p)
 
 
 # ─── TECHNICAL TAB ────────────────────────────────────────────────────────────
@@ -309,3 +340,72 @@ def _etf_fundamental_tab(info: dict, p: dict):
         st.caption("Limited fund data available from yfinance for this ETF.")
 
     st.caption("For income ETFs: focus on yield + expense ratio. For growth ETFs: 3y/5y return + beta.")
+
+
+# ─── SUBSTANTIAL HOLDERS TAB (Dashboard-app bridge) ───────────────────────────
+
+_SH_ACTION_STYLE = {
+    "BECOMING": ("🟢", "603 Becoming", "accumulation — crossed above 5%"),
+    "CHANGE":   ("🟡", "604 Change",   "existing holder moved ≥1% — open PDF for direction"),
+    "CEASING":  ("🔴", "605 Ceasing",  "distribution — dropped below 5%"),
+}
+
+
+def _substantial_holders_tab(yf_sym: str, p: dict):
+    base = yf_sym.split(".")[0].upper()
+    st.markdown("**Substantial holder notices (ASIC 603 / 604 / 605)** — the institutional footprint.")
+    st.caption("History shared with the Dashboard app. Viewing a ticker automatically pulls "
+               "~6 months of its filings from the ASX company-announcements search; the daily "
+               "scraper adds the market-wide record on top.")
+
+    with st.spinner(f"Checking ASX filings for {base}…"):
+        bf_ok, bf_msg = _cached_sh_backfill(base)
+    if not bf_ok:
+        st.warning(f"Couldn't backfill from ASX ({bf_msg}) — showing whatever is already on record.")
+
+    if st.button("🔄 Fetch latest notices (all tickers)", key="sh_refresh"):
+        with st.spinner("Running Dashboard-app scraper…"):
+            ok, out = refresh_substantial_holders()
+        if ok:
+            st.success("Notices updated.")
+        else:
+            st.error(f"Fetch failed: {out[-400:] if out else 'no output'}")
+
+    df_all = load_substantial_holders()
+    if df_all is None:
+        st.info(f"Bridge file not found: `{substantial_holders_path()}`. "
+                "Run the scanner once in the Dashboard app (AU Stocks → Substantial Holders) "
+                "or click Fetch latest notices above.")
+        return
+    if df_all.empty:
+        st.caption("History file exists but has no notices yet.")
+        return
+
+    newest = df_all["date"].max()
+    st.caption(f"{len(df_all)} notices on record across all tickers · latest filing {newest}")
+
+    rows = df_all[df_all["ticker"].str.upper() == base]
+    if rows.empty:
+        st.info(f"No substantial holder notices for **{base}** in the last ~6 months of "
+                "ASX announcements or the accumulated history.")
+        return
+    span = f"{rows['date'].min()} → {rows['date'].max()}"
+    st.markdown(f"**{len(rows)} notice(s) for {base}** · covering {span}")
+
+    for _, r in rows.iterrows():
+        icon, form_label, meaning = _SH_ACTION_STYLE.get(
+            str(r.get("action", "")).upper(), ("⚪", str(r.get("form", "")), ""))
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
+            f'padding:8px 12px;margin:4px 0;background:{p["--bg-card"]};'
+            f'border:1px solid {p["--border"]};border-radius:6px;font-size:0.85rem;">'
+            f'<span>{icon}</span>'
+            f'<span style="font-family:\'JetBrains Mono\';color:{p["--text-muted"]};">{r["date"]} {r.get("time","")}</span>'
+            f'<span style="font-weight:600;color:{p["--text-primary"]};">{form_label}</span>'
+            f'<span style="color:{p["--text-muted"]};">{r["title"]}</span>'
+            f'<a href="{r["pdf_url"]}" target="_blank" style="margin-left:auto;color:{p["--accent"]};">📄 PDF</a>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if meaning:
+            st.caption(f"↳ {meaning}")

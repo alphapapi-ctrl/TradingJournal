@@ -32,11 +32,12 @@ def show(embedded=False):
 
     if account_id:
         trades = fetch_all(
-            "SELECT * FROM trades WHERE account_id=? ORDER BY entry_time DESC LIMIT 500",
+            "SELECT * FROM trades WHERE account_id=? ORDER BY id DESC LIMIT 500",
             (account_id,),
         )
     else:
         trades = get_trades(limit=500)
+    trades = sorted(trades, key=lambda t: t["id"], reverse=True)
     if not trades:
         st.info("No trades found for this account.")
         return
@@ -575,16 +576,20 @@ def _trade_journal_tab(trade):
     t = template or {}
     e = existing or {}
 
-    analysis   = st.text_area("📊 Analysis",   value=e.get("analysis")   or t.get("analysis_template",""),   height=150, key="td_analysis")
-    execution  = st.text_area("⚡ Execution",  value=e.get("execution")  or t.get("execution_template",""),  height=150, key="td_execution")
-    psychology = st.text_area("🧠 Psychology", value=e.get("psychology") or t.get("psychology_template",""), height=150, key="td_psychology")
-    lessons    = st.text_area("💡 Lessons",    value=e.get("lessons", ""), height=80, key="td_lessons")
+    if st.session_state.pop("_td_journal_saved", None):
+        st.toast("Journal notes saved!", icon="✅")
+
+    tid = trade["id"]
+    analysis   = st.text_area("📊 Analysis",   value=e.get("analysis")   or t.get("analysis_template",""),   height=150, key=f"td_analysis_{tid}")
+    execution  = st.text_area("⚡ Execution",  value=e.get("execution")  or t.get("execution_template",""),  height=150, key=f"td_execution_{tid}")
+    psychology = st.text_area("🧠 Psychology", value=e.get("psychology") or t.get("psychology_template",""), height=150, key=f"td_psychology_{tid}")
+    lessons    = st.text_area("💡 Lessons",    value=e.get("lessons", ""), height=80, key=f"td_lessons_{tid}")
 
     col1, col2, col3 = st.columns(3)
     GRADES = ["", "A+", "A", "B+", "B", "C+", "C", "D", "F"]
     grade_idx = GRADES.index(e.get("grade", "")) if e.get("grade") in GRADES else 0
-    grade = col1.selectbox("Grade", GRADES, index=grade_idx, key="td_grade")
-    mood  = col2.slider("Mood", 1, 10, value=int(e.get("mood") or 5), key="td_mood")
+    grade = col1.selectbox("Grade", GRADES, index=grade_idx, key=f"td_grade_{tid}")
+    mood  = col2.slider("Mood", 1, 10, value=int(e.get("mood") or 5), key=f"td_mood_{tid}")
 
     if st.button("💾 Save Journal Notes", type="primary"):
         entry_date = (trade.get("entry_time") or "")[:10] or str(pd.Timestamp.today().date())
@@ -597,8 +602,11 @@ def _trade_journal_tab(trade):
             grade=grade, mood=mood,
             trade_id=trade["id"],
         )
-        st.success("Journal notes saved!")
+        st.session_state["_td_journal_saved"] = True
         st.rerun()
+    if e.get("id"):
+        ts = (e.get("updated_at") or e.get("created_at") or "")[:16]
+        st.caption(f"✅ Saved entry #{e['id']}" + (f" · last updated {ts}" if ts else ""))
 
 
 # ── Related Trades Tab ────────────────────────────────────────────────────────

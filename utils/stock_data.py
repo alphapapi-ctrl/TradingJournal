@@ -39,6 +39,164 @@ def fetch_info(yf_symbol: str) -> dict:
     return yf.Ticker(yf_symbol).info or {}
 
 
+# ─── ASX SUBSTANTIAL HOLDERS (Dashboard-app bridge) ───────────────────────────
+# The sibling dashboard repo (default C:\Users\pc\Project) scrapes ASX
+# substantial holder notices (ASIC forms 603/604/605) into a history CSV.
+# We only READ its files here (and optionally re-run its scraper).
+
+DEFAULT_DASHBOARD_ROOT = r"C:\Users\pc\Project"
+
+
+def _dashboard_root() -> str:
+    try:
+        from utils.market_data import get_setting
+        return get_setting("dashboard_app_root", DEFAULT_DASHBOARD_ROOT)
+    except Exception:
+        return DEFAULT_DASHBOARD_ROOT
+
+
+def substantial_holders_path() -> str:
+    import os
+    return os.path.join(_dashboard_root(), "stocks", "results",
+                        "substantial_holders", "substantial_holders_history.csv")
+
+
+def substantial_holders_last_run():
+    """Datetime the scraper last wrote the history file, or None if never run."""
+    import os, datetime as _dt
+    path = substantial_holders_path()
+    if not os.path.exists(path):
+        return None
+    return _dt.datetime.fromtimestamp(os.path.getmtime(path))
+
+
+def load_substantial_holders() -> pd.DataFrame | None:
+    """All accumulated notices, newest first. None if the bridge file is missing."""
+    import os
+    path = substantial_holders_path()
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path, dtype={"ann_id": str})
+    return df.sort_values(["date", "time"], ascending=False)
+
+
+_ASX_UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'}
+
+_SH_FORM_MAP = [
+    ('becoming a substantial holder', '603', 'BECOMING'),
+    ('ceasing to be a substantial holder', '605', 'CEASING'),
+    ('change in substantial holding', '604', 'CHANGE'),
+]
+
+# Per-company announcement rows: date/time cell ... pdf link + title.
+_SH_COMPANY_ROW_RE = None  # compiled lazily
+
+
+def backfill_substantial_holders(base_ticker: str, period: str = "M6") -> tuple[bool, str]:
+    """
+    Fetch up to 6 months of one company's announcements from the legacy ASX
+    search (asx/v2/statistics/announcements.do) and merge any substantial-holder
+    notices (603/604/605) into the bridge history CSV. Same schema + ann_id
+    dedupe as the dashboard app's scraper, so both apps share one record.
+    """
+    import os, re
+    import requests
+    from datetime import datetime
+
+    global _SH_COMPANY_ROW_RE
+    if _SH_COMPANY_ROW_RE is None:
+        _SH_COMPANY_ROW_RE = re.compile(
+            r'<td>\s*(\d{2}/\d{2}/\d{4})<br>\s*'
+            r'<span class="dates-time">([^<]*)</span>\s*</td>'
+            r'((?:(?!<tr).)*?)'
+            r'href="(/asx/v2/statistics/displayAnnouncement\.do\?display=pdf&amp;idsId=(\d+))">\s*'
+            r'([^<]+?)<br>',
+            re.DOTALL)
+
+    try:
+        r = requests.get(
+            'https://www.asx.com.au/asx/v2/statistics/announcements.do',
+            params={'by': 'asxCode', 'asxCode': base_ticker.upper(),
+                    'timeframe': 'D', 'period': period},
+            headers=_ASX_UA, timeout=30)
+        r.raise_for_status()
+    except Exception as e:
+        return False, f"ASX fetch failed: {e}"
+
+    rows = []
+    for m in _SH_COMPANY_ROW_RE.finditer(r.text):
+        date_s, time_s, _mid, href, ids_id, title = m.groups()
+        title = title.strip()
+        form = action = None
+        for needle, f, a in _SH_FORM_MAP:
+            if needle in title.lower():
+                form, action = f, a
+                break
+        if not form:
+            continue
+        try:
+            dt = datetime.strptime(date_s, '%d/%m/%Y').strftime('%Y-%m-%d')
+        except ValueError:
+            dt = date_s
+        rows.append({
+            'ann_id': ids_id,
+            'date': dt,
+            'time': time_s.strip(),
+            'ticker': base_ticker.upper(),
+            'form': form,
+            'action': action,
+            'title': title,
+            'pdf_url': 'https://www.asx.com.au' + href.replace('&amp;', '&'),
+        })
+
+    if not rows:
+        return True, "No substantial holder notices found in the ASX search window."
+
+    df_new = pd.DataFrame(rows)
+    path = substantial_holders_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    old_times = None
+    if os.path.exists(path):
+        st_ = os.stat(path)
+        old_times = (st_.st_atime, st_.st_mtime)
+        hist = pd.read_csv(path, dtype={'ann_id': str})
+        n_before = len(hist)
+        combined = pd.concat([hist, df_new], ignore_index=True)
+    else:
+        n_before = 0
+        combined = df_new
+    combined['ann_id'] = combined['ann_id'].astype(str)
+    combined = (combined.drop_duplicates(subset='ann_id', keep='first')
+                        .sort_values(['date', 'time'], ascending=False))
+    combined.to_csv(path, index=False)
+    if old_times:
+        # keep mtime = last full-market scraper run (drives the "run today?" banner)
+        try:
+            os.utime(path, old_times)
+        except OSError:
+            pass
+    return True, f"{len(combined) - n_before} new notice(s) merged ({len(rows)} found in window)."
+
+
+def refresh_substantial_holders(timeout: int = 120) -> tuple[bool, str]:
+    """Run the dashboard app's scraper to pull today's + previous day's notices."""
+    import os, sys, subprocess
+    root = _dashboard_root()
+    script = os.path.join(root, "stocks", "asx_substantial_holders.py")
+    if not os.path.exists(script):
+        return False, f"Scraper not found: {script}"
+    py = os.path.join(root, ".venv", "Scripts", "python.exe")
+    if not os.path.exists(py):
+        py = sys.executable
+    try:
+        r = subprocess.run([py, script], cwd=root, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        return False, str(e)
+
+
 # ─── TECHNICALS ───────────────────────────────────────────────────────────────
 
 def _rsi(close: pd.Series, length: int = 14) -> pd.Series:

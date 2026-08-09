@@ -89,7 +89,7 @@ def _show_trades():
 
     where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
     trades = fetch_all(
-        f"SELECT * FROM trades {where_clause} ORDER BY entry_time DESC LIMIT 500", params
+        f"SELECT * FROM trades {where_clause} ORDER BY id DESC LIMIT 500", params
     )
 
     if pb_filter != "All":

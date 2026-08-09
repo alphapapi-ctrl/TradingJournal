@@ -767,12 +767,16 @@ def _review_tab(sess: dict, day: str, sym: str):
     existing = get_journal_entry_for_date("daily", f"replay-{day}")
     with st.form(f"replay_journal_{sid}_{day}"):
         analysis = st.text_area("What did you see? (setup, context)",
-                                value=(existing or {}).get("analysis") or "", height=100)
+                                value=(existing or {}).get("analysis") or "", height=100,
+                                key=f"rj_an_{sid}_{day}")
         execution = st.text_area("Execution & management",
-                                 value=(existing or {}).get("execution") or "", height=80)
-        lessons = st.text_area("Lessons", value=(existing or {}).get("lessons") or "", height=68)
+                                 value=(existing or {}).get("execution") or "", height=80,
+                                 key=f"rj_ex_{sid}_{day}")
+        lessons = st.text_area("Lessons", value=(existing or {}).get("lessons") or "", height=68,
+                               key=f"rj_ls_{sid}_{day}")
         grade = st.selectbox("Grade", ["", "A", "B", "C", "D"],
-                             index=["", "A", "B", "C", "D"].index((existing or {}).get("grade") or ""))
+                             index=["", "A", "B", "C", "D"].index((existing or {}).get("grade") or ""),
+                             key=f"rj_gr_{sid}_{day}")
         if st.form_submit_button("💾 Save review"):
             eid = save_journal_entry((existing or {}).get("id"), "daily", f"replay-{day}",
                                      analysis, execution, None, lessons, grade or None, None)

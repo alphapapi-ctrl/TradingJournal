@@ -288,6 +288,7 @@ def _run_migrations(conn):
         ("trades",              "is_replay",            "INTEGER DEFAULT 0"),
         ("trades",              "replay_day",           "TEXT"),     # historical day being replayed
         ("replay_sessions",     "account_id",           "INTEGER"),  # per-session demo account
+        ("journal_entries",     "symbol",               "TEXT"),     # ticker for pre-trade plans
     ]
     for table, col, col_def in migrations:
         try:

@@ -1,6 +1,7 @@
 """
 Page: Journal — daily, weekly, per-trade with pre/post split and pre-trade planning entries
 """
+import json
 import streamlit as st
 from datetime import date, timedelta
 import calendar as _cal
@@ -24,8 +25,15 @@ def _p():
     return _PALETTES.get(t, _PALETTES["dark"])
 
 
+def _flash(msg):
+    """Queue a confirmation message that survives st.rerun() (shown as a toast next run)."""
+    st.session_state["_journal_flash"] = msg
+
+
 def show():
     st.header("📔 Journal")
+    if st.session_state.get("_journal_flash"):
+        st.toast(st.session_state.pop("_journal_flash"), icon="✅")
 
     # ── Account filter ─────────────────────────────────────────────────────────
     accounts = get_accounts()
@@ -360,38 +368,75 @@ def _calendar_overview(account_id=None):
         reverse=True,
     )
 
+    today_str = str(date.today())
     sel_day = st.selectbox(
         "Select day",
         all_days,
-        index=0,
+        index=all_days.index(today_str) if today_str in all_days else 0,
         key="cal_ov_day_sel",
-        format_func=lambda d: f"{d}{'  ⚡ ' + str(len(day_trades[d])) + ' trade(s)' if d in day_trades else '  (no trades)'}",
+        format_func=lambda d: (
+            f"{d}  ⚡ {len(day_trades[d])} trade(s)" if d in day_trades
+            else f"{d}  🔷 {day_entered[d]} entered" if d in day_entered
+            else f"{d}  (no trades)"
+        ),
     )
 
     if sel_day:
-        t_list = day_trades.get(sel_day, [])
         j_list = day_journal.get(sel_day, [])
         has_daily = any(j["entry_type"] == "daily" for j in j_list)
 
+        # All trading activity touching this day: entries (any status) + exits
+        day_acts = fetch_all(
+            f"""SELECT * FROM trades
+                WHERE (DATE(entry_time)=? OR DATE(exit_time)=?) AND {acc_frag}
+                ORDER BY id""",
+            [sel_day, sel_day] + acc_params,
+        )
+        day_plans = fetch_all(
+            "SELECT * FROM journal_entries WHERE entry_type='trade' AND stage='pre' AND entry_date=? "
+            "ORDER BY id",
+            (sel_day,),
+        )
+
         col_a, col_b = st.columns([3, 1])
         with col_a:
-            if t_list:
-                net = sum(float(t.get("pnl") or 0) for t in t_list)
-                reviewed = sum(1 for t in t_list if trade_has_post.get(t["id"]))
+            if day_acts:
+                closed_today = [t for t in day_acts
+                                if (t.get("exit_time") or "")[:10] == sel_day and t.get("status") == "closed"]
+                net = sum(float(t.get("pnl") or 0) for t in closed_today)
+                reviewed = sum(1 for t in closed_today if trade_has_post.get(t["id"]))
                 pnl_col = p["--accent"] if net >= 0 else p["--danger"]
                 st.markdown(
                     f'<div style="font-size:0.85rem;color:{p["--text-muted"]};">'
-                    f'<b style="color:{pnl_col};">{net:+,.2f}</b> &nbsp;·&nbsp; '
-                    f'{len(t_list)} trade{"s" if len(t_list)>1 else ""} &nbsp;·&nbsp; '
-                    f'{reviewed}/{len(t_list)} reviewed</div>',
+                    f'<b style="color:{pnl_col};">{net:+,.2f}</b> realised &nbsp;·&nbsp; '
+                    f'{len(day_acts)} trade{"s" if len(day_acts)>1 else ""} active &nbsp;·&nbsp; '
+                    f'{len(closed_today)} closed &nbsp;·&nbsp; '
+                    f'{reviewed}/{len(closed_today)} reviewed</div>',
                     unsafe_allow_html=True,
                 )
-                for t in t_list:
+                for t in day_acts:
+                    entered_today = (t.get("entry_time") or "")[:10] == sel_day
+                    exited_today  = (t.get("exit_time") or "")[:10] == sel_day and t.get("status") == "closed"
+                    is_open       = t.get("status") == "open"
+                    if entered_today and exited_today:
+                        act_txt = "🔷🔶 In & out"
+                    elif entered_today and is_open:
+                        act_txt = "🔷 Entered (still open)"
+                    elif entered_today:
+                        act_txt = "🔷 Entered"
+                    else:
+                        act_txt = "🔶 Closed"
                     t_pnl = float(t.get("pnl") or 0)
                     has_post = trade_has_post.get(t["id"])
                     badge_col = p["--accent"] if has_post else p["--warning"]
                     badge_txt = "✅ Reviewed" if has_post else "⚠️ Not reviewed"
                     pnl_col2 = p["--accent"] if t_pnl >= 0 else p["--danger"]
+                    pnl_html = ('<span style="font-size:0.72rem;color:' + p["--text-faint"] + ';">open</span>'
+                                if is_open else
+                                f'<span style="font-family:\'JetBrains Mono\';color:{pnl_col2};font-weight:600;">{t_pnl:+,.2f}</span>')
+                    review_html = ("" if is_open else
+                                   f'<span style="font-size:0.7rem;color:{badge_col};border:1px solid {badge_col};'
+                                   f'border-radius:4px;padding:1px 6px;">{badge_txt}</span>')
                     st.markdown(
                         f'<div style="display:flex;align-items:center;justify-content:space-between;'
                         f'padding:7px 12px;margin:3px 0;background:{p["--bg-card"]};'
@@ -399,23 +444,38 @@ def _calendar_overview(account_id=None):
                         f'<div>'
                         f'<span style="font-weight:600;color:{p["--text-primary"]};">#{t["id"]} {t["symbol"]}</span>'
                         f'<span style="font-size:0.72rem;color:{p["--text-muted"]};margin-left:8px;">{t["direction"]}</span>'
+                        f'<span style="font-size:0.72rem;color:{p["--text-faint"]};margin-left:10px;">{act_txt}</span>'
                         f'</div>'
                         f'<div style="display:flex;align-items:center;gap:12px;">'
-                        f'<span style="font-family:\'JetBrains Mono\';color:{pnl_col2};font-weight:600;">{t_pnl:+,.2f}</span>'
-                        f'<span style="font-size:0.7rem;color:{badge_col};border:1px solid {badge_col};'
-                        f'border-radius:4px;padding:1px 6px;">{badge_txt}</span>'
+                        f'{pnl_html}'
+                        f'{review_html}'
                         f'</div>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
-                    if not has_post:
+                    if not is_open and not has_post:
                         if st.button(f"Write review for #{t['id']} {t['symbol']}",
                                      key=f"goto_review_{t['id']}"):
                             st.session_state["trade_journal_selected"] = t["id"]
                             st.session_state["_pending_tab"] = 3  # Trade Notes
                             st.rerun()
             else:
-                st.caption("No trades on this day.")
+                st.caption("No trades entered or closed on this day.")
+
+            if day_plans:
+                st.markdown("**📋 Pre-trade plans written this day:**")
+                for pl in day_plans:
+                    sym = pl.get("symbol") or ""
+                    linked = f" → Trade #{pl['trade_id']}" if pl.get("trade_id") else " (unassigned)"
+                    snippet = (pl.get("pre_analysis") or pl.get("pre_plan") or "")[:80]
+                    st.markdown(
+                        f'<div style="padding:6px 12px;margin:3px 0;background:{p["--bg-card2"]};'
+                        f'border:1px solid {p["--border"]};border-radius:6px;font-size:0.8rem;">'
+                        f'📋 <b>#{pl["id"]}</b> {sym}{linked}'
+                        f'{f"<span style=\"color:{p['--text-faint']};margin-left:8px;\">{snippet}</span>" if snippet else ""}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
         with col_b:
             daily_entry = next((j for j in j_list if j["entry_type"] == "daily"), None)
@@ -910,17 +970,18 @@ def _journal_form(entry_type, entry_date, entry=None, template=None,
             )
         st.markdown("---")
 
-    analysis   = st.text_area("📊 Analysis",   value=e.get("analysis")   or t.get("analysis_template",   ""), height=180, key=f"analysis_{entry_type}_{entry_date}_{stage}")
-    execution  = st.text_area("⚡ Execution",  value=e.get("execution")  or t.get("execution_template",  ""), height=150, key=f"exec_{entry_type}_{entry_date}_{stage}")
-    psychology = st.text_area("🧠 Psychology", value=e.get("psychology") or t.get("psychology_template", ""), height=150, key=f"psych_{entry_type}_{entry_date}_{stage}")
-    lessons    = st.text_area("💡 Lessons",    value=e.get("lessons", ""),                                    height=80,  key=f"lessons_{entry_type}_{entry_date}_{stage}")
+    k = f"{entry_type}_{entry_date}_{stage}_{trade_id}_{position_id}"
+    analysis   = st.text_area("📊 Analysis",   value=e.get("analysis")   or t.get("analysis_template",   ""), height=180, key=f"analysis_{k}")
+    execution  = st.text_area("⚡ Execution",  value=e.get("execution")  or t.get("execution_template",  ""), height=150, key=f"exec_{k}")
+    psychology = st.text_area("🧠 Psychology", value=e.get("psychology") or t.get("psychology_template", ""), height=150, key=f"psych_{k}")
+    lessons    = st.text_area("💡 Lessons",    value=e.get("lessons", ""),                                    height=80,  key=f"lessons_{k}")
 
     c1, c2 = st.columns(2)
     grade_idx = GRADE_OPTIONS.index(e.get("grade", "")) if e.get("grade") in GRADE_OPTIONS else 0
-    grade = c1.selectbox("Grade", GRADE_OPTIONS, index=grade_idx, key=f"grade_{entry_type}_{entry_date}_{stage}")
-    mood  = c2.slider("Mood (1-10)", 1, 10, value=int(e.get("mood") or 5), key=f"mood_{entry_type}_{entry_date}_{stage}")
+    grade = c1.selectbox("Grade", GRADE_OPTIONS, index=grade_idx, key=f"grade_{k}")
+    mood  = c2.slider("Mood (1-10)", 1, 10, value=int(e.get("mood") or 5), key=f"mood_{k}")
 
-    if st.button("💾 Save Entry", type="primary", key=f"save_{entry_type}_{entry_date}_{stage}"):
+    if st.button("💾 Save Entry", type="primary", key=f"save_{k}"):
         eid = save_journal_entry(
             entry_id=e.get("id"),
             entry_type=entry_type, entry_date=str(entry_date),
@@ -931,8 +992,11 @@ def _journal_form(entry_type, entry_date, entry=None, template=None,
             stage=stage, playbook_id=playbook_id,
             trade_category=trade_category,
         )
-        st.success("Entry saved!")
-        return True, eid
+        _flash("Journal entry saved!")
+        st.rerun()
+    if e.get("id"):
+        ts = (e.get("updated_at") or e.get("created_at") or "")[:16]
+        st.caption(f"✅ Saved entry #{e['id']}" + (f" · last updated {ts}" if ts else ""))
     return False, e.get("id")
 
 
@@ -946,7 +1010,7 @@ def _trade_journal(account_id=None):
     acc_frag, acc_params = _acc_where(account_id)
     raw_trades = fetch_all(
         f"""SELECT * FROM trades WHERE status IN ('open','closed') AND {acc_frag}
-            ORDER BY status='closed', entry_time DESC LIMIT 500""",
+            ORDER BY status='closed', id DESC LIMIT 500""",
         acc_params,
     )
     if not raw_trades:
@@ -990,10 +1054,10 @@ def _trade_journal(account_id=None):
     # Items: ("pos", position_id) or ("trade", trade_id)
     items = []
     seen_trade_ids = set()
-    # Positions first, sorted by most recent trade entry_time
+    # Positions first, sorted by highest trade number they contain
     for pos_id, pd_ in sorted(
         positions_in_scope.items(),
-        key=lambda kv: max((t.get("entry_time") or "") for t in kv[1]["trades"]),
+        key=lambda kv: max(t["id"] for t in kv[1]["trades"]),
         reverse=True,
     ):
         items.append(("pos", pos_id))
@@ -1101,6 +1165,31 @@ def _trade_journal(account_id=None):
         _journal_single_trade(sel_id, raw_trades, template, p)
 
 
+def _playbook_expander(pb_id, rules_met_json=None):
+    """Collapsible playbook details: description + rules, marking met rules when known."""
+    if not pb_id:
+        return
+    pb = get_playbook(pb_id)
+    if not pb:
+        return
+    met = {}
+    if rules_met_json:
+        try:
+            met = {str(k): v for k, v in json.loads(rules_met_json).items()}
+        except Exception:
+            pass
+    with st.expander(f"📖 Playbook: {pb['name']}"):
+        if pb.get("description"):
+            st.caption(pb["description"])
+        for rule in pb.get("rules") or []:
+            badge = {"required": "🔴", "optional": "🟡", "bonus": "🟢"}.get(rule["rule_type"], "⚪")
+            grp   = f" ⛓ _{rule['rule_group']} (any one)_" if rule.get("rule_group") else ""
+            check = (" ✅" if met.get(str(rule["id"])) else " ⬜") if met else ""
+            st.markdown(f"{badge}{check} **{rule['name']}** — _{rule['rule_type']}_{grp}")
+            if rule.get("description"):
+                st.caption(rule["description"])
+
+
 def _journal_position(pos_id, pd_, template, p):
     """Journal UI for a merged position."""
     pos    = pd_["pos"]
@@ -1149,6 +1238,14 @@ def _journal_position(pos_id, pd_, template, p):
     pre_entry  = _get_position_entry(pos_id, stage="pre")
     post_entry = _get_position_entry(pos_id, stage="post")
 
+    pb_id = (
+        (pre_entry or {}).get("playbook_id")
+        or pos.get("playbook_id")
+        or next((t.get("playbook_id") for t in trades if t.get("playbook_id")), None)
+    )
+    rules_met = next((t.get("playbook_rules_met") for t in trades if t.get("playbook_rules_met")), None)
+    _playbook_expander(pb_id, rules_met)
+
     # Unassigned pre-trade plans
     unassigned = fetch_all(
         "SELECT * FROM journal_entries WHERE entry_type='trade' AND stage='pre' AND trade_id IS NULL AND position_id IS NULL ORDER BY entry_date DESC LIMIT 20"
@@ -1157,7 +1254,8 @@ def _journal_position(pos_id, pd_, template, p):
         with st.expander(f"🔗 Link an existing pre-trade plan ({len(unassigned)} unassigned)"):
             for u in unassigned:
                 pb_name = f" · {fetch_all('SELECT name FROM playbooks WHERE id=?', (u['playbook_id'],))[0]['name']}" if u.get("playbook_id") else ""
-                st.markdown(f"**#{u['id']}** {u['entry_date']}{pb_name}")
+                u_sym = f" **{u['symbol']}**" if u.get("symbol") else ""
+                st.markdown(f"**#{u['id']}**{u_sym} {u['entry_date']}{pb_name}")
                 if u.get("pre_analysis") or u.get("pre_plan"): st.caption((u.get("pre_analysis") or u.get("pre_plan"))[:150])
                 if st.button(f"Link #{u['id']} to POS-{pos_id}", key=f"link_pre_pos_{u['id']}_{pos_id}"):
                     execute("UPDATE journal_entries SET position_id=? WHERE id=?", (pos_id, u["id"]))
@@ -1187,15 +1285,15 @@ def _journal_position(pos_id, pd_, template, p):
                 pbs = fetch_all("SELECT name FROM playbooks WHERE id=?", (pre_entry["playbook_id"],))
                 if pbs: st.markdown(f"📖 Playbook: **{pbs[0]['name']}**")
             st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_pos_{pos_id}"):
-                st.session_state[f"edit_pre_pos_{pos_id}"] = True
-            if st.session_state.get(f"edit_pre_pos_{pos_id}"):
+            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_pos_btn_{pos_id}"):
+                st.session_state[f"pre_form_open_pos_{pos_id}"] = True
+            if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
                 _pre_trade_form_position(pos_id, entry_date, pre_entry)
         else:
             st.caption("No pre-trade plan recorded for this position.")
-            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_pos_{pos_id}"):
-                st.session_state[f"edit_pre_pos_{pos_id}"] = True
-            if st.session_state.get(f"edit_pre_pos_{pos_id}"):
+            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_pos_btn_{pos_id}"):
+                st.session_state[f"pre_form_open_pos_{pos_id}"] = True
+            if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
                 _pre_trade_form_position(pos_id, entry_date, None)
 
     with col_post:
@@ -1277,8 +1375,8 @@ def _pre_trade_form_position(pos_id, entry_date, existing):
                        VALUES ('trade',?,?,'pre',?,?,?,?,?,?,?,?)""",
                     (entry_date, pos_id, pb_id, pre_analysis, pre_plan, pre_psychology, pre_risk_notes,
                      body_state, accuracy_check, risk_type))
-        st.session_state.pop(f"edit_pre_pos_{pos_id}", None)
-        st.success("Pre-trade plan saved!")
+        st.session_state.pop(f"pre_form_open_pos_{pos_id}", None)
+        _flash("Pre-trade plan saved!")
         st.rerun()
 
 
@@ -1300,13 +1398,19 @@ def _journal_single_trade(trade_id, raw_trades, template, p):
     pre_entry  = _get_entry("trade", entry_date, trade_id=trade_id, stage="pre")
     post_entry = _get_entry("trade", entry_date, trade_id=trade_id, stage="post")
 
+    _playbook_expander(
+        trade.get("playbook_id") or (pre_entry or {}).get("playbook_id"),
+        trade.get("playbook_rules_met"),
+    )
+
     unassigned = fetch_all(
         "SELECT * FROM journal_entries WHERE entry_type='trade' AND stage='pre' AND trade_id IS NULL AND position_id IS NULL ORDER BY entry_date DESC LIMIT 20"
     )
     if unassigned:
         with st.expander(f"🔗 Link an existing pre-trade plan ({len(unassigned)} unassigned)"):
             for u in unassigned:
-                st.markdown(f"**#{u['id']}** {u['entry_date']}")
+                u_sym = f" **{u['symbol']}**" if u.get("symbol") else ""
+                st.markdown(f"**#{u['id']}**{u_sym} {u['entry_date']}")
                 if u.get("pre_analysis") or u.get("pre_plan"): st.caption((u.get("pre_analysis") or u.get("pre_plan"))[:150])
                 if st.button(f"Link #{u['id']} to this trade", key=f"link_pre_{u['id']}_{trade_id}"):
                     execute("UPDATE journal_entries SET trade_id=? WHERE id=?", (trade_id, u["id"]))
@@ -1336,15 +1440,15 @@ def _journal_single_trade(trade_id, raw_trades, template, p):
                 pbs = fetch_all("SELECT name FROM playbooks WHERE id=?", (pre_entry["playbook_id"],))
                 if pbs: st.markdown(f"📖 Playbook: **{pbs[0]['name']}**")
             st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_{trade_id}"):
-                st.session_state[f"edit_pre_{trade_id}"] = True
-            if st.session_state.get(f"edit_pre_{trade_id}"):
+            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_btn_{trade_id}"):
+                st.session_state[f"pre_form_open_{trade_id}"] = True
+            if st.session_state.get(f"pre_form_open_{trade_id}"):
                 _pre_trade_form_inline(trade, pre_entry)
         else:
             st.caption("No pre-trade plan recorded for this trade.")
-            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_{trade_id}"):
-                st.session_state[f"edit_pre_{trade_id}"] = True
-            if st.session_state.get(f"edit_pre_{trade_id}"):
+            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_btn_{trade_id}"):
+                st.session_state[f"pre_form_open_{trade_id}"] = True
+            if st.session_state.get(f"pre_form_open_{trade_id}"):
                 _pre_trade_form_inline(trade, None)
 
     with col_post:
@@ -1392,8 +1496,8 @@ def _pre_trade_form_inline(trade, existing):
                     (entry_date, trade["id"], pb_id,
                      pre_analysis, pre_plan, pre_psychology, pre_risk_notes,
                      body_state, accuracy_check, risk_type))
-        st.session_state.pop(f"edit_pre_{trade['id']}", None)
-        st.success("Pre-trade plan saved!")
+        st.session_state.pop(f"pre_form_open_{trade['id']}", None)
+        _flash("Pre-trade plan saved!")
         st.rerun()
 
 
@@ -1408,9 +1512,11 @@ def _pretrade_journal(account_id=None):
 
 
 def _new_pretrade_plan(account_id=None):
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col_sym, col2, col3 = st.columns([2, 1, 1, 1])
     with col1:
         plan_date = st.date_input("Date", value=date.today(), key="pt_date")
+    with col_sym:
+        plan_symbol = st.text_input("Symbol", key="pt_symbol", placeholder="e.g. AAPL").strip().upper()
     with col2:
         playbooks  = get_playbooks()
         pb_options = {"None": None} | {pb["name"]: pb["id"] for pb in playbooks}
@@ -1450,19 +1556,21 @@ def _new_pretrade_plan(account_id=None):
     if st.button("💾 Save Pre-Trade Plan", type="primary"):
         execute("""INSERT INTO journal_entries
                    (entry_type, entry_date, stage, playbook_id,
-                    pre_analysis, pre_plan, pre_psychology, pre_risk_notes, account_id)
-                   VALUES ('trade',?,'pre',?,?,?,?,?,?)""",
-                (str(plan_date), pb_id, pre_analysis, pre_plan, pre_psychology, pre_risk_notes, plan_acc_id))
-        st.success("✅ Pre-trade plan saved! Come back after the trade to link it and write your post-trade review.")
+                    pre_analysis, pre_plan, pre_psychology, pre_risk_notes, account_id, symbol)
+                   VALUES ('trade',?,'pre',?,?,?,?,?,?,?)""",
+                (str(plan_date), pb_id, pre_analysis, pre_plan, pre_psychology, pre_risk_notes,
+                 plan_acc_id, plan_symbol or None))
+        _flash("Pre-trade plan saved! Come back after the trade to link it and write your post-trade review.")
         st.rerun()
 
 
 def _list_pretrade_plans(account_id=None):
     plans = fetch_all(
-        """SELECT j.*, p.name as playbook_name, a.name as account_name
+        """SELECT j.*, p.name as playbook_name, a.name as account_name, t.symbol as trade_symbol
            FROM journal_entries j
            LEFT JOIN playbooks p ON j.playbook_id = p.id
            LEFT JOIN accounts  a ON j.account_id  = a.id
+           LEFT JOIN trades    t ON j.trade_id    = t.id
            WHERE j.entry_type='trade' AND j.stage='pre'
            ORDER BY j.entry_date DESC, j.created_at DESC"""
     )
@@ -1481,7 +1589,8 @@ def _list_pretrade_plans(account_id=None):
         for plan in unassigned:
             pb_badge  = f" · 📖 {plan['playbook_name']}" if plan.get("playbook_name") else ""
             acc_badge = f" · 🏦 {plan['account_name']}" if plan.get("account_name") else ""
-            with st.expander(f"📋 {plan['entry_date']}{pb_badge}{acc_badge}  _(unassigned)_"):
+            sym_label = f" · {plan['symbol']}" if plan.get("symbol") else ""
+            with st.expander(f"📋 {plan['entry_date']}{pb_badge}{acc_badge}  _(unassigned{sym_label})_"):
                 if plan.get("pre_analysis"): st.markdown(f"**Analysis:** {plan['pre_analysis'][:300]}")
                 if plan.get("pre_plan"):     st.markdown(f"**Plan:** {plan['pre_plan'][:200]}")
                 # Trades offered for linking: prefer the plan's own account, else journal filter.
@@ -1490,7 +1599,7 @@ def _list_pretrade_plans(account_id=None):
                 acc_frag, acc_params = _acc_where(link_acc)
                 trades = fetch_all(
                     f"""SELECT * FROM trades WHERE status IN ('open','closed') AND {acc_frag}
-                        ORDER BY status='closed', entry_time DESC LIMIT 200""",
+                        ORDER BY status='closed', id DESC LIMIT 200""",
                     acc_params,
                 )
                 if trades:
@@ -1517,7 +1626,8 @@ def _list_pretrade_plans(account_id=None):
         for plan in assigned[:10]:
             pb_badge  = f" · {plan['playbook_name']}" if plan.get("playbook_name") else ""
             acc_badge = f" · 🏦 {plan['account_name']}" if plan.get("account_name") else ""
-            trade_info = f" → Trade #{plan['trade_id']}" if plan.get("trade_id") else ""
+            trade_sym = f" {plan['trade_symbol']}" if plan.get("trade_symbol") else ""
+            trade_info = f" → Trade #{plan['trade_id']}{trade_sym}" if plan.get("trade_id") else ""
             with st.expander(f"✅ {plan['entry_date']}{pb_badge}{acc_badge}{trade_info}"):
                 if plan.get("pre_analysis"): st.markdown(f"**Analysis:** {plan['pre_analysis'][:200]}")
 
