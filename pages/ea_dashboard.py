@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import calendar
 
 from database import fetch_all
+from utils.app_settings import get_setting
 from brokers.mt5_parser import calc_stats
 
 
@@ -86,9 +87,9 @@ def show():
         return
 
     # ── Last sync timestamp ───────────────────────────────────────────────────
-    last_sync = fetch_all("SELECT value FROM app_settings WHERE key='ftp_last_sync'")
-    if last_sync and last_sync[0]["value"]:
-        st.caption(f"Last FTP sync: {last_sync[0]['value']}")
+    last_sync = get_setting("ftp_last_sync")
+    if last_sync:
+        st.caption(f"Last FTP sync: {last_sync}")
 
     # ── Account selector ──────────────────────────────────────────────────────
     all_labels = [d["acc"]["name"] for d in all_data]

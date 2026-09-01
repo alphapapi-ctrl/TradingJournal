@@ -1538,7 +1538,10 @@ def _new_pretrade_plan(account_id=None):
                 for rule in pb["rules"]:
                     badge = {"required":"🔴","optional":"🟡","bonus":"🟢"}.get(rule["rule_type"],"⚪")
                     grp = f"  ⛓ _{rule['rule_group']} (any one)_" if rule.get("rule_group") else ""
-                    st.checkbox(f"{badge} {rule['name']}{grp}", key=f"pt_rule_{rule['id']}")
+                    st.checkbox(
+                        f"{badge} {rule['name']}{grp}",
+                        key=f"pt_rule_{pb_id}_{rule['id']}",
+                    )
 
     st.divider()
     col1, col2 = st.columns(2)

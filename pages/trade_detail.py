@@ -532,7 +532,7 @@ def _trade_playbook(trade):
         checked = st.checkbox(
             f"{badge} **{rule['name']}** — _{rule['rule_type']}_{grp}  \n{rule.get('description', '')}",
             value=default,
-            key=f"td_rule_{rule['id']}"
+            key=f"td_rule_{trade['id']}_{rule['id']}"
         )
         rules_met[rule["id"]] = checked
 
@@ -547,7 +547,10 @@ def _trade_playbook(trade):
 
     # Live score preview
     from utils.playbook_logic import evaluate_trade_risk
-    live = evaluate_trade_risk(pb_id, {r["id"]: st.session_state.get(f"td_rule_{r['id']}", False) for r in pb["rules"]})
+    live = evaluate_trade_risk(
+        pb_id,
+        {r["id"]: st.session_state.get(f"td_rule_{trade['id']}_{r['id']}", False) for r in pb["rules"]},
+    )
     if live:
         st.divider()
         c1, c2, c3 = st.columns(3)

@@ -4,8 +4,8 @@ Stock data layer — yfinance wrappers for the Forward Test / Stock Analysis pag
 Technical checks mirror the FX Evolution / Wyckoff strategy:
   EMA 21/50, SMA 200 (daily + weekly), RSI 14, OBV, volume-spike (capitulation) detection.
 
-Fundamental checks are a crude Buffett/Burry value prequalification:
-  traffic-light pass/warn/fail on valuation, profitability, balance-sheet strength.
+Fundamental checks are a generalised pre-qualification framework:
+  valuation, quality, financial strength, growth, and analyst-target checks.
 """
 import pandas as pd
 import numpy as np
@@ -50,6 +50,19 @@ LEGACY_SUBHOLDERS_PATH = Path("stocks") / "results" / "substantial_holders" / "s
 LOCAL_SUBHOLDERS_PATH = Path("data") / "substantial_holders" / "substantial_holders_history.csv"
 
 
+def _is_writable_dir(path: str | Path) -> bool:
+    p = Path(path)
+    try:
+        if not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+        test = p / ".write_test"
+        test.write_text("ok", encoding="utf-8")
+        test.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
 def _dashboard_root() -> str:
     try:
         from utils.market_data import get_setting
@@ -57,7 +70,7 @@ def _dashboard_root() -> str:
         if cfg:
             p = Path(cfg)
             looks_like_bridge = (p / "stocks" / "results").exists()
-            if p.exists() and looks_like_bridge:
+            if p.exists() and looks_like_bridge and _is_writable_dir(p):
                 return str(p)
     except Exception:
         pass
@@ -168,6 +181,15 @@ def backfill_substantial_holders(base_ticker: str, period: str = "M6") -> tuple[
     df_new = pd.DataFrame(rows)
     path = substantial_holders_path()
     path_dir = Path(path).parent
+    if not _is_writable_dir(path_dir):
+        # If configured bridge is not writable (common after moving machines),
+        # keep a fallback cache under this app's own data directory.
+        fallback = PROJECT_ROOT / LOCAL_SUBHOLDERS_PATH
+        path_dir = fallback.parent
+        if not _is_writable_dir(path_dir):
+            return False, "Substantial-holders cache folder is not writable."
+        path = str(fallback)
+
     path_dir.mkdir(parents=True, exist_ok=True)
     old_times = None
     if os.path.exists(path):

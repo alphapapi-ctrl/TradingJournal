@@ -17,6 +17,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import fetch_all
+from utils.app_settings import get_setting
 from utils.statistics import get_trade_stats
 from utils.trade_ops import get_journal_entries
 from utils.theme import get_theme, get_chart_font_color, get_chart_grid_color, _PALETTES
@@ -100,8 +101,8 @@ def _account_size(account_id=None) -> float:
     if total > 0:
         return total
     # Last resort: app settings override
-    setting = fetch_all("SELECT value FROM app_settings WHERE key='account_balance'")
-    return float(setting[0]["value"]) if setting and setting[0]["value"] else 10000.0
+    setting = get_setting("account_balance")
+    return float(setting) if setting not in (None, "") else 10000.0
 
 
 # ── Main entry ────────────────────────────────────────────────────────────────
@@ -162,8 +163,8 @@ def show():
     else:
         acct_size = sum(float(a.get("initial_balance") or 0) for a in accounts)
         if acct_size == 0:
-            setting = fetch_all("SELECT value FROM app_settings WHERE key='account_balance'")
-            acct_size = float(setting[0]["value"]) if setting and setting[0]["value"] else 10000.0
+            setting = get_setting("account_balance")
+            acct_size = float(setting) if setting not in (None, "") else 10000.0
 
     # ── 1. KPI row ────────────────────────────────────────────────────────────
     _kpi_row(all_stats, selected_account_id)

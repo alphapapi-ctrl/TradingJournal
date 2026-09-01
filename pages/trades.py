@@ -8,6 +8,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import fetch_all
+from utils.app_settings import get_settings_dict
 from utils.trade_ops import (
     get_trades, get_trade, update_trade_playbook, delete_trade,
     merge_trades_into_position, get_positions, unmerge_position, set_position_playbook
@@ -362,8 +363,7 @@ def _show_positions():
     pb_select_opts = ["— None —"] + [pb["name"] for pb in pb_all]
 
     # 1R base = account balance × default risk %
-    settings = {r["key"]: r["value"] for r in fetch_all("SELECT key, value FROM app_settings")}
-    risk_pct = float(settings.get("risk_pct", 1.0))
+    risk_pct = float(get_settings_dict().get("risk_pct", 1.0))
     acc_bal  = {a["id"]: float(a.get("initial_balance") or 0) for a in accounts}
 
     if positions:

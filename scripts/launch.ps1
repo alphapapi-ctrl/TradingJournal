@@ -24,9 +24,11 @@ $port = if ($config -and $config.server_port) { [int]$config.server_port } else 
 $openBrowser = if ($null -ne $config -and $null -ne $config.open_browser) { [bool]$config.open_browser } else { $true }
 $headless = if ($null -ne $config -and $null -ne $config.server_headless) { [bool]$config.server_headless } else { $true }
 
-$url = "http://localhost:$port"
 if (-not $address) { $address = $defaultAddress }
 if ($port -lt 1 -or $port -gt 65535) { $port = $defaultPort }
+$listenHost = $address
+$urlHost = if ($listenHost -eq "0.0.0.0") { "localhost" } else { $listenHost }
+$url = "http://$urlHost:$port"
 $headlessArg = if ($headless) { "true" } else { "false" }
 $configSource = if (Test-Path $configPath) { "data\\network.json" } else { "defaults" }
 Write-Host "Trading Journal launch config: source=$configSource address=$address port=$port headless=$headlessArg openBrowser=$openBrowser"

@@ -15,8 +15,7 @@ from pathlib import Path
 import pandas as pd
 import pytz
 import streamlit as st
-
-from database import fetch_all, execute
+from utils.app_settings import get_setting as _get_setting, set_setting as _set_setting
 
 BERLIN = pytz.timezone("Europe/Berlin")  # kept for backwards compat
 DEFAULT_SR_ROOT = r"C:\Users\pc\School Run App"
@@ -44,16 +43,11 @@ _STEM_RE = re.compile(
 
 # ── Settings ──────────────────────────────────────────────────────────────
 def get_setting(key: str, default=None):
-    rows = fetch_all("SELECT value FROM app_settings WHERE key=?", (key,))
-    return rows[0]["value"] if rows else default
+    return _get_setting(key, default)
 
 
 def save_setting(key: str, value):
-    existing = fetch_all("SELECT key FROM app_settings WHERE key=?", (key,))
-    if existing:
-        execute("UPDATE app_settings SET value=? WHERE key=?", (str(value), key))
-    else:
-        execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, str(value)))
+    _set_setting(key, value)
 
 
 def get_sr_root() -> Path:

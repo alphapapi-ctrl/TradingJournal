@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+from utils.app_settings import NetworkSettings, load_network_settings, normalize_network_dict, save_network_settings
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 NETWORK_CONFIG_PATH = ROOT_DIR / "data" / "network.json"
@@ -9,12 +10,7 @@ STREAMLIT_CONFIG_PATH = ROOT_DIR / ".streamlit" / "config.toml"
 
 
 def _default_config() -> Dict[str, Any]:
-    return {
-        "server_address": "127.0.0.1",
-        "server_port": 8503,
-        "server_headless": True,
-        "open_browser": True,
-    }
+    return NetworkSettings().to_dict()
 
 
 def load_network_config() -> Dict[str, Any]:
@@ -26,36 +22,24 @@ def load_network_config() -> Dict[str, Any]:
         with NETWORK_CONFIG_PATH.open("r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
-        return _default_config()
-
-    defaults = _default_config()
-    merged = dict(defaults)
+        raw = {}
+    merged = _default_config()
     merged.update(raw or {})
-    merged["server_port"] = _coerce_port(merged.get("server_port"))
-    merged["server_headless"] = bool(str(merged.get("server_headless", True)).lower() in ("1", "true", "yes", "on"))
-    merged["open_browser"] = bool(str(merged.get("open_browser", True)).lower() in ("1", "true", "yes", "on"))
-    return merged
+    return normalize_network_dict(merged)
 
 
 def save_network_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(_default_config())
-    normalized.update(config)
-    normalized["server_port"] = _coerce_port(normalized.get("server_port"))
-    normalized["server_headless"] = bool(
-        str(normalized.get("server_headless", True)).lower() in ("1", "true", "yes", "on")
-    )
-    normalized["open_browser"] = bool(
-        str(normalized.get("open_browser", True)).lower() in ("1", "true", "yes", "on")
-    )
+    normalized = normalize_network_dict(config)
     NETWORK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with NETWORK_CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(normalized, f, indent=2)
+    save_network_settings(normalized)
     _sync_to_streamlit_config(normalized)
     return normalized
 
 
 def streamlit_launch_command(config: Dict[str, Any] | None = None) -> str:
-    cfg = config or load_network_config()
+    cfg = normalize_network_dict(load_network_settings().to_dict() if config is None else config)
     host = str(cfg.get("server_address", "127.0.0.1")).strip() or "127.0.0.1"
     port = _coerce_port(cfg.get("server_port"))
     headless = "true" if bool(cfg.get("server_headless", True)) else "false"
@@ -79,36 +63,30 @@ def _sync_to_streamlit_config(config: Dict[str, Any]) -> None:
 
     parts = existing.splitlines()
     out: list[str] = []
+    wrote_server = False
     in_server = False
-    in_other_section = False
-    replaced_server = False
+
     for line in parts:
         if line.strip() == "[server]":
-            if not replaced_server:
-                out.extend([
-                    "[server]",
-                    f'address = "{host}"',
-                    f"port = {port}",
-                    f'headless = {headless}',
-                ])
-            replaced_server = True
+            out.append("[server]")
+            out.append(f'address = "{host}"')
+            out.append(f"port = {port}")
+            out.append(f'headless = {headless}')
+            wrote_server = True
             in_server = True
             continue
         if in_server:
             if line.startswith("[") and line.endswith("]"):
-                in_server = False
-                in_other_section = True
                 out.append(line)
-            else:
-                continue
-        else:
-            out.append(line)
+                in_server = False
+            # Skip old server lines entirely.
+            continue
+        out.append(line)
 
-    if not replaced_server:
-        out.append("")
+    if not wrote_server:
         out.extend([
+            "",
             "[server]",
-            'headless = true',
             f'address = "{host}"',
             f"port = {port}",
             f'headless = {headless}',

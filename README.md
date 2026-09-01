@@ -12,8 +12,8 @@ live open P&L (including dividends) and process-compliance reporting.
 - **Menaker framework** — categorise every trade Type 1–4 (on/off-plan × win/loss),
   pre-trade psychology check (accuracy, smart vs sloppy risk, body scan), autopsy prompts
 - **Stock Analysis** — technicals (EMA 21/50, SMA 200, RSI, OBV, volume-spike/capitulation
-  scan, weekly demand zones) and a crude Buffett/Burry fundamental prequalification with
-  traffic-light checks; ETF-aware
+  scan, weekly demand zones) with a generalised fundamental checks framework and ETF-aware
+  filtering
 - **Risk Calculator** — stocks-first position sizing with live prices, creates linked
   pre-trade journal entries; Kelly criterion from your measured edge
 - **Add Trade** — auto-detected imports: TradingView paper CSV, IBKR Activity Statement,

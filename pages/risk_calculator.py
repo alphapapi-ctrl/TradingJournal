@@ -8,13 +8,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import fetch_all, execute
+from utils.app_settings import get_settings_dict
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _get_settings() -> dict:
-    rows = fetch_all("SELECT key, value FROM app_settings")
-    return {r["key"]: r["value"] for r in rows} if rows else {}
+    return get_settings_dict()
 
 CHART_STYLE = dict(
     plot_bgcolor="rgba(0,0,0,0)",

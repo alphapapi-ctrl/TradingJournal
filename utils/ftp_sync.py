@@ -14,7 +14,8 @@ import logging
 import threading
 from datetime import datetime
 
-from database import fetch_all, execute as _db_exec
+from database import fetch_all
+from utils.app_settings import set_setting
 
 log = logging.getLogger(__name__)
 
@@ -34,17 +35,7 @@ def get_ftp_config() -> dict:
 
 
 def _save_setting(key: str, value: str):
-    existing = fetch_all("SELECT key FROM app_settings WHERE key=?", (key,))
-    if existing:
-        _db_exec(
-            "UPDATE app_settings SET value=?, updated_at=datetime('now') WHERE key=?",
-            (value, key),
-        )
-    else:
-        _db_exec(
-            "INSERT INTO app_settings (key, value) VALUES (?,?)",
-            (key, value),
-        )
+    set_setting(key, value)
 
 
 def _save_sync_status(results: dict):

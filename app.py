@@ -7,7 +7,15 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database import init_db, fetch_all
+from database import init_db
+from utils.runtime_checks import collect_startup_issues
+from utils.sidebar_stats import get_sidebar_stats
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_sidebar_stats():
+    """Small aggregated stats for the sidebar to avoid repeated queries."""
+    return get_sidebar_stats()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -77,13 +85,19 @@ with st.sidebar:
 
     st.divider()
 
+    checks = collect_startup_issues()
+    if checks:
+        with st.expander("⚠ Startup checks", expanded=False):
+            for issue in checks:
+                st.warning(issue)
+
     # Live stats
-    total_n  = fetch_all("SELECT COUNT(*) as n FROM trades WHERE status='closed'")[0]["n"]
-    wins_n   = fetch_all("SELECT COUNT(*) as n FROM trades WHERE status='closed' AND pnl>0")[0]["n"]
-    open_n   = fetch_all("SELECT COUNT(*) as n FROM trades WHERE status='open'")[0]["n"]
-    pnl_row  = fetch_all("SELECT ROUND(SUM(pnl - ABS(COALESCE(commission,0))),2) as p FROM trades WHERE status='closed'")[0]["p"]
-    acc_n    = fetch_all("SELECT COUNT(*) as n FROM accounts")[0]["n"]
-    net_pnl  = float(pnl_row or 0)
+    stats = _load_sidebar_stats()
+    total_n  = int(stats.get("total_closed") or 0)
+    wins_n   = int(stats.get("wins_closed") or 0)
+    open_n   = int(stats.get("open_n") or 0)
+    net_pnl  = float(stats.get("net_pnl") or 0)
+    acc_n    = int(stats.get("acc_n") or 0)
     wr       = f"{wins_n/total_n*100:.0f}%" if total_n > 0 else "—"
     pnl_col  = p["--accent"] if net_pnl >= 0 else p["--danger"]
     open_html = f"<div>Open: <span style='color:{p['--warning']};'>{open_n}</span></div>" if open_n > 0 else ""
@@ -97,11 +111,11 @@ with st.sidebar:
         {open_html}
     </div>""", unsafe_allow_html=True)
 
-    name_rows = fetch_all("SELECT value FROM app_settings WHERE key='trader_name'")
-    if name_rows and name_rows[0]["value"]:
+    trader_name = stats.get("trader_name")
+    if trader_name:
         st.markdown(f"""
         <div style="margin-top:10px;font-size:0.75rem;color:{p['--text-faint']};">
-            👤 {name_rows[0]['value']}
+            👤 {trader_name}
         </div>""", unsafe_allow_html=True)
 
 # ── Router ────────────────────────────────────────────────────────────────────

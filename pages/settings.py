@@ -6,23 +6,18 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import fetch_all, execute
+from utils.app_settings import get_settings_dict, set_many_settings, set_setting
 from utils.seed_data import seed_all
 
 
 def get_settings() -> dict:
-    rows = fetch_all("SELECT key, value FROM app_settings")
-    return {r["key"]: r["value"] for r in rows} if rows else {}
+    return get_settings_dict()
 
 def save_setting(key: str, value):
-    existing = fetch_all("SELECT key FROM app_settings WHERE key=?", (key,))
-    if existing:
-        execute("UPDATE app_settings SET value=? WHERE key=?", (str(value), key))
-    else:
-        execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, str(value)))
+    set_setting(key, value)
 
 def save_all_settings(data: dict):
-    for k, v in data.items():
-        save_setting(k, v)
+    set_many_settings(data)
 
 
 def show():

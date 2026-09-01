@@ -1,9 +1,7 @@
 """
-Database layer for Trading Journal - SQLite via SQLAlchemy
+Database layer for Trading Journal — SQLite (sqlite3).
 """
 import sqlite3
-import json
-from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "data" / "journal.db"
