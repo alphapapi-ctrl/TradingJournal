@@ -193,17 +193,81 @@ def backfill_substantial_holders(base_ticker: str, period: str = "M6") -> tuple[
 
 
 def refresh_substantial_holders(timeout: int = 120) -> tuple[bool, str]:
-    """Run the dashboard app's scraper to pull today's + previous day's notices."""
+    """Run the dashboard-app scraper when available, otherwise backfill from
+    local ASX tickers in the journal data so the feature still works without
+    external project wiring.
+    """
     import os, sys, subprocess
-    root = _dashboard_root()
-    script = os.path.join(root, "stocks", "asx_substantial_holders.py")
-    if not os.path.exists(script):
-        root_alt = os.path.join(os.path.dirname(root), "stocks")
-        if os.path.exists(root_alt):
-            script = os.path.join(root_alt, "asx_substantial_holders.py")
-            root = root_alt
-    if not os.path.exists(script):
-        return False, f"Scraper not found: {script}"
+
+    candidates = []
+    cfg_root = _dashboard_root()
+    candidates.append((cfg_root, os.path.join(cfg_root, "stocks", "asx_substantial_holders.py")))
+
+    # Optional legacy location (if settings still point to a sibling project folder)
+    legacy_root = os.path.join(PROJECT_ROOT.parent, "stocks")
+    if os.path.exists(legacy_root):
+        candidates.append((legacy_root, os.path.join(legacy_root, "asx_substantial_holders.py")))
+
+    # Absolute fallback paths that often work on this repo layout
+    fallback_root = os.path.join(PROJECT_ROOT, "stocks")
+    candidates.append((fallback_root, os.path.join(fallback_root, "asx_substantial_holders.py")))
+
+    script = ""
+    root = ""
+    for cand_root, cand_script in candidates:
+        if cand_script and os.path.exists(cand_script):
+            root = cand_root
+            script = cand_script
+            break
+
+    if not script:
+        # Fallback: backfill based on symbols already in this repo's database.
+        try:
+            from database import fetch_all
+
+            rows = fetch_all(
+                "SELECT DISTINCT symbol FROM trades WHERE symbol IS NOT NULL AND symbol != ''"
+            )
+            symbols = sorted({
+                str(r["symbol"]).strip().upper() for r in rows if str(r["symbol"]).strip()
+            })
+            if not symbols:
+                return (
+                    False,
+                    "No tickers found in journal data for fallback backfill. "
+                    "Save settings `dashboard_app_root` if you still want the external scraper."
+                )
+
+            attempted = 0
+            added = 0
+            failures = []
+            for sym in symbols:
+                base = sym.split(".")[0].strip()
+                if not base:
+                    continue
+                attempted += 1
+                ok, msg = backfill_substantial_holders(base)
+                if ok:
+                    try:
+                        # Success format: \"<n> new notice(s)...\"
+                        if "new notice" in msg:
+                            added += int(msg.split(" new notice", 1)[0].split()[-1])
+                    except Exception:
+                        pass
+                else:
+                    failures.append(f"{base}: {msg}")
+
+            summary = f"Fallback backfill ran for {attempted} ticker(s), added ~{added} new notices."
+            if failures:
+                summary += " Some failed: " + "; ".join(failures[:6])
+                return False, summary
+            return True, summary
+        except Exception as e:
+            return (
+                False,
+                "Scraper not found. Set app setting `dashboard_app_root` to the legacy Dashboard project "
+                "that contains `stocks\\asx_substantial_holders.py`, or rely on per-ticker backfill by opening ASX tickers."
+            ) if str(e) else "Scraper not found."
     py = os.path.join(root, ".venv", "Scripts", "python.exe")
     if not os.path.exists(py):
         py = sys.executable
