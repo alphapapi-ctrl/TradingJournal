@@ -28,6 +28,8 @@ $url = "http://localhost:$port"
 if (-not $address) { $address = $defaultAddress }
 if ($port -lt 1 -or $port -gt 65535) { $port = $defaultPort }
 $headlessArg = if ($headless) { "true" } else { "false" }
+$configSource = if (Test-Path $configPath) { "data\\network.json" } else { "defaults" }
+Write-Host "Trading Journal launch config: source=$configSource address=$address port=$port headless=$headlessArg openBrowser=$openBrowser"
 
 function Test-Port {
     try {
@@ -40,6 +42,7 @@ function Test-Port {
 
 if (Test-Port) {
     Write-Host "Trading Journal already running - opening browser."
+    Write-Host "If you just changed network settings, stop the current Streamlit process first (Ctrl+C in terminal or task manager) and re-run launch."
     Start-Process $url
     exit 0
 }
