@@ -3,11 +3,13 @@ Database layer for Trading Journal — SQLite (sqlite3).
 """
 import os
 import sqlite3
+import shutil
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
 _PRIMARY_DB_PATH = _DATA_DIR / "journal.db"
 _LEGACY_DB_PATH = _DATA_DIR / "trading_journal.db"
+_DB_PATH: Path | None = None
 
 
 def _resolve_db_path() -> Path:
@@ -16,58 +18,110 @@ def _resolve_db_path() -> Path:
     if override:
         return Path(override).expanduser()
 
-    # Prefer the database containing the richer dataset when both files exist.
-    candidates = [p for p in (_PRIMARY_DB_PATH, _LEGACY_DB_PATH) if p.exists()]
-    if len(candidates) > 1:
+    primary_score = _db_quality_score(_PRIMARY_DB_PATH)
+
+    # Prefer a populated DB file when multiple local DBs are present.
+    candidates = _discover_db_candidates()
+    if candidates:
         ranked = sorted(
             ((_db_quality_score(p), p) for p in candidates),
             key=lambda item: item[0],
             reverse=True,
         )
         best_score, best_path = ranked[0]
+        if best_path != _PRIMARY_DB_PATH and best_score > primary_score:
+            # One-time auto-recovery: keep canonical DB filename for future compatibility.
+            if _can_write_db_path(_PRIMARY_DB_PATH):
+                try:
+                    shutil.copy2(best_path, _PRIMARY_DB_PATH)
+                except Exception:
+                    return best_path
+                return _PRIMARY_DB_PATH
+            return best_path
         if best_score > 0:
             return best_path
 
-    return candidates[0] if candidates else _PRIMARY_DB_PATH
+    return _PRIMARY_DB_PATH
+
+
+def _discover_db_candidates() -> list[Path]:
+    # Keep this intentionally local and scoped so "git pull" or restores won't wipe history.
+    if not _DATA_DIR.exists():
+        return [_PRIMARY_DB_PATH]
+    extensions = ("*.db", "*.sqlite", "*.sqlite3")
+    found: list[Path] = []
+    for pattern in extensions:
+        found.extend(_DATA_DIR.glob(pattern))
+    if _PRIMARY_DB_PATH not in found:
+        found.append(_PRIMARY_DB_PATH)
+    if _LEGACY_DB_PATH not in found:
+        found.append(_LEGACY_DB_PATH)
+    # de-dup and prefer explicit app files first when scores tie
+    deduped = []
+    seen = set()
+    for p in found:
+        s = str(p.resolve())
+        if s not in seen:
+            deduped.append(p)
+            seen.add(s)
+    return deduped
 
 
 def _db_quality_score(path: Path) -> int:
     # Lightweight signal for whether this file already has app data.
-    # Priority: can open + has expected table + row count on trades.
+    # Priority: can open + has expected table + row count on key tables.
     try:
         conn = sqlite3.connect(str(path), timeout=5)
         c = conn.cursor()
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
         has_trades = c.fetchone() is not None
-        if not has_trades:
-            conn.close()
-            return 0
-        c.execute("SELECT COUNT(*) FROM trades")
-        rows = c.fetchone()[0] or 0
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
         has_accounts = c.fetchone() is not None
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='journal_entries'")
+        has_journal = c.fetchone() is not None
+        if not (has_trades or has_accounts or has_journal):
+            conn.close()
+            return 0
+
+        def _count_rows(table: str) -> int:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM {table}")
+                return int(c.fetchone()[0] or 0)
+            except Exception:
+                return 0
+
+        rows = _count_rows("trades") + _count_rows("journal_entries")
         conn.close()
-        return (10 if has_accounts else 0) + int(rows)
+        return (20 if has_trades else 0) + (10 if has_accounts else 0) + rows
     except Exception:
         return 0
 
 
-DB_PATH = _resolve_db_path()
+def _can_write_db_path(path: Path) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.parent / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
 
 def _data_dir():
     _DATA_DIR.mkdir(exist_ok=True)
     return _DATA_DIR
 
 def get_connection():
+    global _DB_PATH
+    _DB_PATH = _resolve_db_path()
     _data_dir()
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    Path(_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 def init_db():
-    DB_PATH.parent.mkdir(exist_ok=True)
     conn = get_connection()
     c = conn.cursor()
 
