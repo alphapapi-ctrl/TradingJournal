@@ -1,8 +1,8 @@
 """
 Database layer for Trading Journal — SQLite (sqlite3).
 """
-import sqlite3
 import os
+import sqlite3
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
@@ -16,13 +16,40 @@ def _resolve_db_path() -> Path:
     if override:
         return Path(override).expanduser()
 
-    # Prefer the current primary DB name, but auto-fallback to the legacy name
-    # if the project was previously running from that path.
-    if _PRIMARY_DB_PATH.exists():
-        return _PRIMARY_DB_PATH
-    if _LEGACY_DB_PATH.exists():
-        return _LEGACY_DB_PATH
-    return _PRIMARY_DB_PATH
+    # Prefer the database containing the richer dataset when both files exist.
+    candidates = [p for p in (_PRIMARY_DB_PATH, _LEGACY_DB_PATH) if p.exists()]
+    if len(candidates) > 1:
+        ranked = sorted(
+            ((_db_quality_score(p), p) for p in candidates),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        best_score, best_path = ranked[0]
+        if best_score > 0:
+            return best_path
+
+    return candidates[0] if candidates else _PRIMARY_DB_PATH
+
+
+def _db_quality_score(path: Path) -> int:
+    # Lightweight signal for whether this file already has app data.
+    # Priority: can open + has expected table + row count on trades.
+    try:
+        conn = sqlite3.connect(str(path), timeout=5)
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+        has_trades = c.fetchone() is not None
+        if not has_trades:
+            conn.close()
+            return 0
+        c.execute("SELECT COUNT(*) FROM trades")
+        rows = c.fetchone()[0] or 0
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
+        has_accounts = c.fetchone() is not None
+        conn.close()
+        return (10 if has_accounts else 0) + int(rows)
+    except Exception:
+        return 0
 
 
 DB_PATH = _resolve_db_path()
