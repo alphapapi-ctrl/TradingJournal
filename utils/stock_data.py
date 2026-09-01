@@ -588,8 +588,13 @@ def fundamental_checks(info: dict) -> dict:
     div_y = g("dividendYield")
     if div_y:
         dy = div_y if div_y < 1 else div_y / 100
-            add("Dividend Yield", "pass" if dy > 0.025 else "warn", f"{dy*100:.2f}%",
-            "Meaningful yield" if dy > 0.025 else "Modest yield", bucket="Financial Strength")
+        add(
+            "Dividend Yield",
+            "pass" if dy > 0.025 else "warn",
+            f"{dy*100:.2f}%",
+            "Meaningful yield" if dy > 0.025 else "Modest yield",
+            bucket="Financial Strength",
+        )
 
     # Verdict
     scored = [c for c in checks.values() if c["status"] in ("pass", "warn", "fail")]

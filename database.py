@@ -2,12 +2,38 @@
 Database layer for Trading Journal — SQLite (sqlite3).
 """
 import sqlite3
+import os
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "data" / "journal.db"
+_DATA_DIR = Path(__file__).parent / "data"
+_PRIMARY_DB_PATH = _DATA_DIR / "journal.db"
+_LEGACY_DB_PATH = _DATA_DIR / "trading_journal.db"
+
+
+def _resolve_db_path() -> Path:
+    # Environment override for deployments where the DB is kept outside the app folder.
+    override = os.getenv("TRADING_JOURNAL_DB_PATH") or os.getenv("TJ_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+
+    # Prefer the current primary DB name, but auto-fallback to the legacy name
+    # if the project was previously running from that path.
+    if _PRIMARY_DB_PATH.exists():
+        return _PRIMARY_DB_PATH
+    if _LEGACY_DB_PATH.exists():
+        return _LEGACY_DB_PATH
+    return _PRIMARY_DB_PATH
+
+
+DB_PATH = _resolve_db_path()
+
+def _data_dir():
+    _DATA_DIR.mkdir(exist_ok=True)
+    return _DATA_DIR
 
 def get_connection():
-    DB_PATH.parent.mkdir(exist_ok=True)
+    _data_dir()
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
