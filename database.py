@@ -332,26 +332,60 @@ def _seed_default_templates():
 # ─── CRUD helpers ────────────────────────────────────────────────────────────
 
 def fetch_all(query, params=()):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute(query, params)
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute(query, params)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows
+    except sqlite3.OperationalError as exc:
+        if "no such table:" in str(exc).lower():
+            init_db()
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(query, params)
+            rows = [dict(r) for r in c.fetchall()]
+            conn.close()
+            return rows
+        raise
 
 def fetch_one(query, params=()):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute(query, params)
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute(query, params)
+        row = c.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except sqlite3.OperationalError as exc:
+        if "no such table:" in str(exc).lower():
+            init_db()
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(query, params)
+            row = c.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        raise
 
 def execute(query, params=()):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute(query, params)
-    conn.commit()
-    last_id = c.lastrowid
-    conn.close()
-    return last_id
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute(query, params)
+        conn.commit()
+        last_id = c.lastrowid
+        conn.close()
+        return last_id
+    except sqlite3.OperationalError as exc:
+        if "no such table:" in str(exc).lower():
+            init_db()
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(query, params)
+            conn.commit()
+            last_id = c.lastrowid
+            conn.close()
+            return last_id
+        raise

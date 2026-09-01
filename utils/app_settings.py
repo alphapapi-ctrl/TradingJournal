@@ -2,11 +2,48 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from database import execute, fetch_all
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+)
+"""
+
+
+def _ensure_app_settings_table() -> None:
+    execute(_SCHEMA_SQL)
+
+
+def _is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
+    return "no such table: app_settings" in str(exc).lower()
+
+
+def _safe_fetch(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    try:
+        return fetch_all(query, params)
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            _ensure_app_settings_table()
+            return []
+        raise
+
+
+def _safe_fetch_value(query: str, params: tuple[Any, ...] = ()) -> Any:
+    try:
+        return fetch_all(query, params)
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            _ensure_app_settings_table()
+            return []
+        raise
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -28,16 +65,34 @@ def _coerce_port(value: Any, default: int = 8503) -> int:
 
 
 def get_setting(key: str, default: Any = None) -> Any:
-    rows = fetch_all("SELECT value FROM app_settings WHERE key=?", (key,))
+    rows = _safe_fetch("SELECT value FROM app_settings WHERE key=?", (key,))
     return rows[0]["value"] if rows else default
 
 
 def set_setting(key: str, value: Any) -> None:
-    existing = fetch_all("SELECT key FROM app_settings WHERE key=?", (key,))
-    if existing:
-        execute("UPDATE app_settings SET value=?, updated_at=datetime('now') WHERE key=?", (str(value), key))
-    else:
-        execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, str(value)))
+    try:
+        existing = fetch_all("SELECT key FROM app_settings WHERE key=?", (key,))
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            _ensure_app_settings_table()
+            existing = []
+        else:
+            raise
+
+    try:
+        if existing:
+            execute("UPDATE app_settings SET value=?, updated_at=datetime('now') WHERE key=?", (str(value), key))
+        else:
+            execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, str(value)))
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            _ensure_app_settings_table()
+            if existing:
+                execute("UPDATE app_settings SET value=?, updated_at=datetime('now') WHERE key=?", (str(value), key))
+            else:
+                execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, str(value)))
+        else:
+            raise
 
 
 def set_many_settings(values: dict[str, Any]) -> None:
@@ -46,7 +101,7 @@ def set_many_settings(values: dict[str, Any]) -> None:
 
 
 def get_settings_dict() -> dict[str, str]:
-    rows = fetch_all("SELECT key, value FROM app_settings")
+    rows = _safe_fetch("SELECT key, value FROM app_settings")
     return {r["key"]: r["value"] for r in rows} if rows else {}
 
 
