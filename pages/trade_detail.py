@@ -25,7 +25,7 @@ def show(embedded=False):
     accounts = get_accounts()
     acc_options = {"All Accounts": None} | {a["name"]: a["id"] for a in accounts}
 
-    col_acc, col1, col2 = st.columns([1, 3, 1])
+    col_acc, col1 = st.columns([1, 4])
     with col_acc:
         sel_acc = st.selectbox("Account", list(acc_options.keys()), key="td_account")
         account_id = acc_options[sel_acc]
@@ -42,32 +42,34 @@ def show(embedded=False):
         st.info("No trades found for this account.")
         return
 
+    ids = [t["id"] for t in trades]
+
+    # Any pending selection change (external jump from Positions, or the
+    # Newer/Older buttons) is applied HERE, before the dropdown renders —
+    # Streamlit forbids writing a widget's state after it's instantiated.
+    jump = st.session_state.pop("detail_trade_id", None)
+    if jump in ids:
+        st.session_state["td_trade_sel"] = jump
+    if st.session_state.get("td_trade_sel") not in ids:
+        st.session_state["td_trade_sel"] = ids[0]
+
     with col1:
         def trade_label(x):
             t = next((t for t in trades if t["id"] == x), None)
             if not t:
                 return str(x)
+            if t.get("status") == "open":
+                return f"🔓 #{x}  {t['symbol']} {t['direction']}  @{t.get('entry_price','')}  (open)  [{(t.get('entry_time') or '')[:10]}]"
             pnl = float(t.get("pnl") or 0)
             sign = "+" if pnl >= 0 else ""
             return f"#{x}  {t['symbol']} {t['direction']}  @{t.get('entry_price','')}  P&L: {sign}{pnl:.2f}  [{(t.get('entry_time') or '')[:10]}]"
 
         selected_id = st.selectbox(
             "Select trade",
-            options=[t["id"] for t in trades],
+            options=ids,
             format_func=trade_label,
+            key="td_trade_sel",
         )
-    with col2:
-        st.write("")
-        st.write("")
-        if st.button("⬅ Previous") and selected_id:
-            ids = [t["id"] for t in trades]
-            idx = ids.index(selected_id)
-            if idx + 1 < len(ids):
-                st.session_state["detail_trade_id"] = ids[idx + 1]
-                st.rerun()
-        
-    if "detail_trade_id" in st.session_state:
-        selected_id = st.session_state["detail_trade_id"]
 
     trade = get_trade(selected_id)
     if not trade:

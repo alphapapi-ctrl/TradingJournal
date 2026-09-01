@@ -1,6 +1,7 @@
 [server]
 headless = true
-port = 8502
+port = 8503
+address = "127.0.0.1"
 
 [client]
 showSidebarNavigation = false

@@ -3,7 +3,7 @@
 # - Otherwise starts Streamlit from the repo venv, waits for the port, opens the browser.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$port = 8502
+$port = 8503
 $url = "http://localhost:$port"
 $python = Join-Path $root ".venv\Scripts\python.exe"
 
