@@ -9,6 +9,7 @@ Fundamental checks are a crude Buffett/Burry value prequalification:
 """
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 
 # ─── SYMBOL RESOLUTION ────────────────────────────────────────────────────────
@@ -40,25 +41,36 @@ def fetch_info(yf_symbol: str) -> dict:
 
 
 # ─── ASX SUBSTANTIAL HOLDERS (Dashboard-app bridge) ───────────────────────────
-# The sibling dashboard repo (default C:\Users\pc\Project) scrapes ASX
-# substantial holder notices (ASIC forms 603/604/605) into a history CSV.
-# We only READ its files here (and optionally re-run its scraper).
-
-DEFAULT_DASHBOARD_ROOT = r"C:\Users\pc\Project"
+# Prefer local storage under this repo: data/substantial_holders.
+# Optionally, if dashboard_app_root is set to an existing folder, keep using that
+# historical path. This prevents permission errors on different user profiles.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "data"
+LEGACY_SUBHOLDERS_PATH = Path("stocks") / "results" / "substantial_holders" / "substantial_holders_history.csv"
+LOCAL_SUBHOLDERS_PATH = Path("data") / "substantial_holders" / "substantial_holders_history.csv"
 
 
 def _dashboard_root() -> str:
     try:
         from utils.market_data import get_setting
-        return get_setting("dashboard_app_root", DEFAULT_DASHBOARD_ROOT)
+        cfg = get_setting("dashboard_app_root", "")
+        if cfg:
+            p = Path(cfg)
+            looks_like_bridge = (p / "stocks" / "results").exists()
+            if p.exists() and looks_like_bridge:
+                return str(p)
     except Exception:
-        return DEFAULT_DASHBOARD_ROOT
+        pass
+    return str(DEFAULT_DASHBOARD_ROOT)
 
 
 def substantial_holders_path() -> str:
-    import os
-    return os.path.join(_dashboard_root(), "stocks", "results",
-                        "substantial_holders", "substantial_holders_history.csv")
+    root = Path(_dashboard_root())
+    # Legacy project layout (older remote installs)
+    legacy = root / LEGACY_SUBHOLDERS_PATH
+    if legacy.exists() or (root / "stocks" / "results").exists():
+        return str(legacy)
+    return str(PROJECT_ROOT / LOCAL_SUBHOLDERS_PATH)
 
 
 def substantial_holders_last_run():
@@ -155,7 +167,8 @@ def backfill_substantial_holders(base_ticker: str, period: str = "M6") -> tuple[
 
     df_new = pd.DataFrame(rows)
     path = substantial_holders_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    path_dir = Path(path).parent
+    path_dir.mkdir(parents=True, exist_ok=True)
     old_times = None
     if os.path.exists(path):
         st_ = os.stat(path)
@@ -184,6 +197,11 @@ def refresh_substantial_holders(timeout: int = 120) -> tuple[bool, str]:
     import os, sys, subprocess
     root = _dashboard_root()
     script = os.path.join(root, "stocks", "asx_substantial_holders.py")
+    if not os.path.exists(script):
+        root_alt = os.path.join(os.path.dirname(root), "stocks")
+        if os.path.exists(root_alt):
+            script = os.path.join(root_alt, "asx_substantial_holders.py")
+            root = root_alt
     if not os.path.exists(script):
         return False, f"Scraper not found: {script}"
     py = os.path.join(root, ".venv", "Scripts", "python.exe")

@@ -877,8 +877,9 @@ def _network_settings():
                 "open_browser": bool(open_browser),
             })
             st.success("Network settings saved.")
+            st.info("🔁 Restart required: close all running Streamlit instances and restart via `launch.bat` for changes to take effect.")
             st.rerun()
 
     st.divider()
     st.markdown("**Current launch command**")
-    st.code(streamlit_launch_command(cfg), language="bash")
+    st.code(streamlit_launch_command(load_network_config()), language="bash")
