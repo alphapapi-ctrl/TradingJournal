@@ -107,6 +107,9 @@ def _can_write_db_path(path: Path) -> bool:
     except Exception:
         return False
 
+
+DB_PATH: Path = _resolve_db_path()
+
 def _data_dir():
     _DATA_DIR.mkdir(exist_ok=True)
     return _DATA_DIR
@@ -114,6 +117,8 @@ def _data_dir():
 def get_connection():
     global _DB_PATH
     _DB_PATH = _resolve_db_path()
+    global DB_PATH
+    DB_PATH = _DB_PATH
     _data_dir()
     Path(_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH), timeout=10)
