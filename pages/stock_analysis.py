@@ -66,7 +66,7 @@ def show():
     p = _p()
     st.caption("Forward-test companion — real market data via yfinance. "
                "Technical read follows the Wyckoff strategy (EMA 21/50, SMA 200, volume, OBV); "
-               "fundamentals are a crude Buffett/Burry value prequalification.")
+               "fundamentals include valuation, quality, growth, balance-sheet health, and analyst sentiment.")
 
     # ── Substantial holders freshness note ────────────────────────────────────
     sh_last = substantial_holders_last_run()
@@ -275,6 +275,7 @@ def _fundamental_tab(info: dict, p: dict):
     fund = fundamental_checks(info)
     v_status, v_text = fund["verdict"]
     v_col = {"pass": p["--accent"], "warn": p["--warning"], "fail": p["--danger"], "na": p["--text-faint"]}[v_status]
+    groups = fund["summary"].get("groups", {})
 
     st.markdown(
         f'<div style="background:{v_col}18;border:1px solid {v_col};border-radius:8px;'
@@ -285,7 +286,30 @@ def _fundamental_tab(info: dict, p: dict):
         f'</div>',
         unsafe_allow_html=True,
     )
-    st.caption("Crude prequalification only — Buffett quality (ROE, margins, FCF) + Burry value/survivability (P/B, debt, liquidity). Not a substitute for reading the filings.")
+
+    if groups:
+        g_cols = st.columns(len(groups))
+        for col, (name, s) in zip(g_cols, groups.items()):
+            group_total = s["total"]
+            if group_total == 0:
+                continue
+            col_pass = s["pass"]
+            col_fail = s["fail"]
+            good = col_pass >= int(group_total * 0.7)
+            bad = col_fail >= int(group_total * 0.4)
+            c_col = p["--accent"] if good else (p["--danger"] if bad else p["--warning"])
+            c_text = f"{col_pass}✓ {col_fail}✗ of {group_total}"
+            col.markdown(
+                f'<div style="background:{p["--bg-card"]};border:1px solid {p["--border"]};border-radius:6px;'
+                f'padding:8px 10px;text-align:center;font-size:0.75rem;">'
+                f'<div style="font-weight:700;color:{p["--text-primary"]};margin-bottom:2px;">{name}</div>'
+                f'<div style="color:{c_col};font-weight:600;">{c_text}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.caption("Indicative fundamental scoring model (valuation, quality, growth, balance-sheet health, analyst view). "
+               "Not a substitute for full financial due diligence.")
 
     for name, c in fund["checks"].items():
         col = {"pass": p["--accent"], "warn": p["--warning"], "fail": p["--danger"], "na": p["--text-faint"]}[c["status"]]

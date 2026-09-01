@@ -388,138 +388,209 @@ def compute_technicals(daily: pd.DataFrame, weekly: pd.DataFrame | None = None) 
     return sig
 
 
-# ─── FUNDAMENTALS (Buffett / Burry crude prequalification) ────────────────────
+# ─── FUNDAMENTALS (General fundamental quality framework) ────────────────────
 
 def fundamental_checks(info: dict) -> dict:
     """
-    Crude value-investing prequalification. Each check returns
+    General fundamental quality checks. Each check returns
     (status, value_display, explanation) where status ∈ pass/warn/fail/na.
     """
     def g(key, default=None):
-        v = info.get(key, default)
-        return v if v is not None else default
+        return info.get(key, default)
 
     checks = {}
 
-    def add(name, status, value, note):
+    def add(name, status, value, note, bucket="General"):
         checks[name] = {"status": status, "value": value, "note": note}
+        if status in ("pass", "warn", "fail"):
+            bucket_totals[bucket]["total"] += 1
+            if status == "pass":
+                bucket_totals[bucket]["pass"] += 1
+            elif status == "fail":
+                bucket_totals[bucket]["fail"] += 1
 
-    # ── Valuation (Burry: cheap relative to earnings/book) ───────────────────
+    bucket_totals = {
+        "Valuation": {"pass": 0, "fail": 0, "total": 0},
+        "Quality": {"pass": 0, "fail": 0, "total": 0},
+        "Growth": {"pass": 0, "fail": 0, "total": 0},
+        "Financial Strength": {"pass": 0, "fail": 0, "total": 0},
+        "Analyst": {"pass": 0, "fail": 0, "total": 0},
+    }
+
+    # Valuation
     pe = g("trailingPE")
     if pe is None or pe <= 0:
-        add("P/E Ratio", "na" if pe is None else "warn",
-            "n/a" if pe is None else f"{pe:.1f}",
-            "No earnings (or negative) — speculative for a value approach" if pe is not None else "No data")
-    elif pe < 15:
-        add("P/E Ratio", "pass", f"{pe:.1f}", "Cheap earnings multiple (<15) — classic value zone")
-    elif pe < 25:
-        add("P/E Ratio", "warn", f"{pe:.1f}", "Fair (15–25) — pay attention to growth justification")
+        add("P/E Ratio", "na" if pe is None else "warn", "n/a" if pe is None else f"{pe:.1f}",
+            "No meaningful earnings yet" if pe is not None else "No data", bucket="Valuation")
+    elif pe < 14:
+        add("P/E Ratio", "pass", f"{pe:.1f}", "Attractive on earnings multiple", bucket="Valuation")
+    elif pe < 26:
+        add("P/E Ratio", "warn", f"{pe:.1f}", "Fair valuation; depends on durability of growth", bucket="Valuation")
     else:
-        add("P/E Ratio", "fail", f"{pe:.1f}", "Expensive (>25) — priced for growth, little margin of safety")
+        add("P/E Ratio", "fail", f"{pe:.1f}", "High multiple versus current earnings", bucket="Valuation")
+
+    pe_fwd = g("forwardPE")
+    if pe_fwd is not None:
+        if pe_fwd < 14:
+            status = "pass"
+            note = "Forward earnings imply additional upside if growth holds"
+        elif pe_fwd < 27:
+            status = "warn"
+            note = "Forward multiple sits near fair value"
+        else:
+            status = "fail"
+            note = "Forward multiple still elevated"
+        add("Forward P/E", status, f"{pe_fwd:.1f}", note, bucket="Valuation")
 
     pb = g("priceToBook")
     if pb is None:
-        add("P/B Ratio", "na", "n/a", "No data")
-    elif pb < 1.5:
-        add("P/B Ratio", "pass", f"{pb:.2f}", "Below 1.5 — Burry-style asset value support")
+            add("Price/Book", "na", "n/a", "No data", bucket="Valuation")
+    elif pb < 1.2:
+        add("Price/Book", "pass", f"{pb:.2f}", "Trades below/book value on this metric", bucket="Valuation")
     elif pb < 3:
-        add("P/B Ratio", "warn", f"{pb:.2f}", "Moderate — book value gives limited downside cover")
+        add("Price/Book", "warn", f"{pb:.2f}", "Mid-band; balance-sheet support limited", bucket="Valuation")
     else:
-        add("P/B Ratio", "fail", f"{pb:.2f}", "High multiple to book — asset backing thin")
+        add("Price/Book", "fail", f"{pb:.2f}", "Premium to book; valuation is less conservative", bucket="Valuation")
 
-    peg = g("pegRatio") or g("trailingPegRatio")
-    if peg is not None:
-        if 0 < peg < 1:
-            add("PEG Ratio", "pass", f"{peg:.2f}", "Growth cheaper than the multiple implies")
-        elif 0 < peg < 2:
-            add("PEG Ratio", "warn", f"{peg:.2f}", "Fairly priced growth")
-        else:
-            add("PEG Ratio", "fail", f"{peg:.2f}", "Paying up for growth")
-
-    # ── Profitability / moat (Buffett: consistent high returns) ──────────────
+    # Profitability and operating quality
     roe = g("returnOnEquity")
     if roe is None:
-        add("Return on Equity", "na", "n/a", "No data")
-    elif roe > 0.15:
-        add("Return on Equity", "pass", f"{roe*100:.1f}%", "Above 15% — Buffett quality threshold")
+            add("Return on Equity", "na", "n/a", "No data", bucket="Quality")
+    elif roe > 0.18:
+        add("Return on Equity", "pass", f"{roe*100:.1f}%", "Strong ROE indicates good capital use", bucket="Quality")
     elif roe > 0.08:
-        add("Return on Equity", "warn", f"{roe*100:.1f}%", "Modest returns on equity")
+        add("Return on Equity", "warn", f"{roe*100:.1f}%", "Moderate ROE, mixed quality", bucket="Quality")
     else:
-        add("Return on Equity", "fail", f"{roe*100:.1f}%", "Weak returns — capital not compounding well")
+        add("Return on Equity", "fail", f"{roe*100:.1f}%", "Weak ROE; capital efficiency may be low", bucket="Quality")
 
     margins = g("profitMargins")
     if margins is None:
-        add("Net Margin", "na", "n/a", "No data")
-    elif margins > 0.15:
-        add("Net Margin", "pass", f"{margins*100:.1f}%", "Fat margins — pricing power / moat signal")
-    elif margins > 0.05:
-        add("Net Margin", "warn", f"{margins*100:.1f}%", "Average margins")
+            add("Net Margin", "na", "n/a", "No data", bucket="Quality")
+    elif margins > 0.12:
+        add("Net Margin", "pass", f"{margins*100:.1f}%", "Strong bottom-line conversion", bucket="Quality")
+    elif margins > 0.03:
+        add("Net Margin", "warn", f"{margins*100:.1f}%", "Positive but moderate margins", bucket="Quality")
     else:
-        add("Net Margin", "fail", f"{margins*100:.1f}%", "Thin or negative margins")
+        add("Net Margin", "fail", f"{margins*100:.1f}%", "Thin or negative net margins", bucket="Quality")
 
     fcf = g("freeCashflow")
     if fcf is None:
-        add("Free Cash Flow", "na", "n/a", "No data")
+            add("Free Cash Flow", "na", "n/a", "No data", bucket="Quality")
     elif fcf > 0:
         mcap = g("marketCap")
         yield_txt = f" (FCF yield {fcf/mcap*100:.1f}%)" if mcap else ""
-        add("Free Cash Flow", "pass", f"{fcf/1e6:,.0f}M{yield_txt}", "Positive FCF — the business funds itself")
+        add("Free Cash Flow", "pass", f"{fcf/1e6:,.0f}M{yield_txt}", "Positive, funding core operations", bucket="Quality")
     else:
-        add("Free Cash Flow", "fail", f"{fcf/1e6:,.0f}M", "Burning cash")
+        add("Free Cash Flow", "fail", f"{fcf/1e6:,.0f}M", "Negative cash generation", bucket="Quality")
 
-    # ── Balance sheet (Burry: survivability) ─────────────────────────────────
+    # Balance sheet and liquidity
     de = g("debtToEquity")
     if de is None:
-        add("Debt / Equity", "na", "n/a", "No data")
+            add("Debt / Equity", "na", "n/a", "No data", bucket="Financial Strength")
     else:
-        de_ratio = de / 100 if de > 10 else de   # yfinance often returns percentage
-        if de_ratio < 0.5:
-            add("Debt / Equity", "pass", f"{de_ratio:.2f}", "Low leverage — sleeps well at night")
+        de_ratio = de / 100 if de > 10 else de  # yfinance can emit percentage style
+        if de_ratio < 0.4:
+            add("Debt / Equity", "pass", f"{de_ratio:.2f}", "Conservative leverage", bucket="Financial Strength")
         elif de_ratio < 1.0:
-            add("Debt / Equity", "warn", f"{de_ratio:.2f}", "Moderate leverage")
+            add("Debt / Equity", "warn", f"{de_ratio:.2f}", "Moderate leverage", bucket="Financial Strength")
         else:
-            add("Debt / Equity", "fail", f"{de_ratio:.2f}", "High leverage — fragile in downturns")
+            add("Debt / Equity", "fail", f"{de_ratio:.2f}", "High leverage exposure", bucket="Financial Strength")
 
     cr = g("currentRatio")
     if cr is None:
-        add("Current Ratio", "na", "n/a", "No data")
-    elif cr > 1.5:
-        add("Current Ratio", "pass", f"{cr:.2f}", "Comfortable short-term liquidity")
+            add("Current Ratio", "na", "n/a", "No data", bucket="Financial Strength")
+    elif cr > 1.6:
+        add("Current Ratio", "pass", f"{cr:.2f}", "Healthy short-term liquidity", bucket="Financial Strength")
     elif cr > 1.0:
-        add("Current Ratio", "warn", f"{cr:.2f}", "Adequate but tight liquidity")
+        add("Current Ratio", "warn", f"{cr:.2f}", "Adequate liquidity", bucket="Financial Strength")
     else:
-        add("Current Ratio", "fail", f"{cr:.2f}", "Current liabilities exceed current assets")
+        add("Current Ratio", "fail", f"{cr:.2f}", "Tighter short-term coverage", bucket="Financial Strength")
 
-    # ── Growth sanity ────────────────────────────────────────────────────────
+    # Growth
     rev_g = g("revenueGrowth")
     if rev_g is not None:
-        if rev_g > 0.10:
-            add("Revenue Growth", "pass", f"{rev_g*100:+.1f}%", "Healthy top-line growth")
-        elif rev_g > 0:
-            add("Revenue Growth", "warn", f"{rev_g*100:+.1f}%", "Slow growth")
+        if rev_g > 0.08:
+            add("Revenue Growth", "pass", f"{rev_g*100:+.1f}%", "Meaningful top-line growth", bucket="Growth")
+        elif rev_g >= 0:
+            add("Revenue Growth", "warn", f"{rev_g*100:+.1f}%", "Low to mid single-digit growth", bucket="Growth")
         else:
-            add("Revenue Growth", "fail", f"{rev_g*100:+.1f}%", "Shrinking revenue")
+            add("Revenue Growth", "fail", f"{rev_g*100:+.1f}%", "Declining revenue trend", bucket="Growth")
 
+    e_g = g("earningsGrowth")
+    if e_g is not None:
+        if e_g > 0.10:
+            add("Earnings Growth", "pass", f"{e_g*100:+.1f}%", "Healthy earnings acceleration", bucket="Growth")
+        elif e_g >= 0:
+            add("Earnings Growth", "warn", f"{e_g*100:+.1f}%", "Mixed earnings quality", bucket="Growth")
+        else:
+            add("Earnings Growth", "fail", f"{e_g*100:+.1f}%", "Shrinking earnings growth", bucket="Growth")
+
+    # Analyst view
+    t_low = g("targetLowPrice")
+    t_mid = g("targetMeanPrice")
+    t_high = g("targetHighPrice")
+    price = g("regularMarketPrice") or g("previousClose")
+    n_analysts = g("numberOfAnalystOpinions")
+    analyst_points = sum(1 for v in (t_low, t_mid, t_high) if v is not None)
+    if analyst_points >= 2 and price and price > 0:
+        target = t_mid if t_mid is not None else ((t_low + t_high) / 2 if t_low is not None and t_high is not None else None)
+        if target is None:
+            add("Analyst Target", "na", "n/a", "Insufficient target bands to estimate")
+        else:
+            upside = (target / price - 1) * 100
+            if upside >= 15:
+                status = "pass"
+                note = "Analyst target materially above market"
+            elif upside >= 0:
+                status = "warn"
+                note = "Target is roughly in line or only modestly above market"
+            else:
+                status = "fail"
+                note = "Consensus target below market"
+            if t_low is not None and t_high is not None:
+                target_display = f"{t_low:.2f} / {t_mid:.2f} / {t_high:.2f}" if t_mid is not None else f"{t_low:.2f} / {t_high:.2f}"
+            elif t_mid is not None:
+                target_display = f"{t_mid:.2f}"
+            else:
+                target_display = f"{t_low:.2f}" if t_low is not None else f"{t_high:.2f}"
+            add("Analyst Target", status, target_display, f"{note} ({upside:+.1f}%)" + (f"; {int(n_analysts)} contributors" if n_analysts else ""), bucket="Analyst")
+    else:
+        if analyst_points >= 2 and not (price and price > 0):
+            # Price unavailable means we cannot compute a sensible relative signal
+            pass
+        elif analyst_points >= 1:
+            # If only one target value is available, skip to avoid misleading display
+            pass
+
+    # Dividend signal
     div_y = g("dividendYield")
     if div_y:
         dy = div_y if div_y < 1 else div_y / 100
-        add("Dividend Yield", "pass" if dy > 0.03 else "warn", f"{dy*100:.2f}%",
-            "Meaningful income" if dy > 0.03 else "Modest income")
+            add("Dividend Yield", "pass" if dy > 0.025 else "warn", f"{dy*100:.2f}%",
+            "Meaningful yield" if dy > 0.025 else "Modest yield", bucket="Financial Strength")
 
-    # ── Verdict ──────────────────────────────────────────────────────────────
+    # Verdict
     scored = [c for c in checks.values() if c["status"] in ("pass", "warn", "fail")]
     n_pass = sum(1 for c in scored if c["status"] == "pass")
     n_fail = sum(1 for c in scored if c["status"] == "fail")
     n = len(scored)
 
     if n == 0:
-        verdict = ("na", "Insufficient data")
-    elif n_fail == 0 and n_pass >= n * 0.6:
-        verdict = ("pass", "Good fundamentals — value prequalification passed")
-    elif n_fail >= n * 0.4:
-        verdict = ("fail", "Weak fundamentals — fails crude value screen")
+        verdict = ("na", "Insufficient data for a fundamental view")
+    elif n_fail >= n * 0.45:
+        verdict = ("fail", "Multiple weak checks — fundamentals need careful review")
+    elif n_pass >= n * 0.65:
+        verdict = ("pass", "Fundamental profile is generally constructive")
     else:
-        verdict = ("warn", "Mixed fundamentals — needs a judgement call")
+        verdict = ("warn", "Mixed signals across fundamentals")
 
-    return {"checks": checks, "verdict": verdict,
-            "summary": {"pass": n_pass, "fail": n_fail, "total": n}}
+    return {
+        "checks": checks,
+        "verdict": verdict,
+        "summary": {
+            "pass": n_pass,
+            "fail": n_fail,
+            "total": n,
+            "groups": bucket_totals,
+        },
+    }
