@@ -3,7 +3,6 @@ Database layer for Trading Journal — SQLite (sqlite3).
 """
 import os
 import sqlite3
-import shutil
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
@@ -18,8 +17,6 @@ def _resolve_db_path() -> Path:
     if override:
         return Path(override).expanduser()
 
-    primary_score = _db_quality_score(_PRIMARY_DB_PATH)
-
     # Prefer a populated DB file when multiple local DBs are present.
     candidates = _discover_db_candidates()
     if candidates:
@@ -29,15 +26,6 @@ def _resolve_db_path() -> Path:
             reverse=True,
         )
         best_score, best_path = ranked[0]
-        if best_path != _PRIMARY_DB_PATH and best_score > primary_score:
-            # One-time auto-recovery: keep canonical DB filename for future compatibility.
-            if _can_write_db_path(_PRIMARY_DB_PATH):
-                try:
-                    shutil.copy2(best_path, _PRIMARY_DB_PATH)
-                except Exception:
-                    return best_path
-                return _PRIMARY_DB_PATH
-            return best_path
         if best_score > 0:
             return best_path
 
@@ -96,16 +84,6 @@ def _db_quality_score(path: Path) -> int:
     except Exception:
         return 0
 
-
-def _can_write_db_path(path: Path) -> bool:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        probe = path.parent / ".write_probe"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return True
-    except Exception:
-        return False
 
 
 DB_PATH: Path = _resolve_db_path()
