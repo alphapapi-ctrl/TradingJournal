@@ -27,3 +27,6 @@ Thumbs.db
 *.csv
 Statement_*.csv
 !data/reference/us_news_events.csv
+
+# Deployment artifact folder for copying to remote machine
+deploy_package/

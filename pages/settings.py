@@ -28,8 +28,8 @@ def save_all_settings(data: dict):
 def show():
     st.header("⚙️ Settings")
 
-    tab_accounts, tab_risk, tab_display, tab_ai, tab_data, tab_ftp = st.tabs([
-        "🏦 Accounts", "⚖️ Risk Defaults", "🎨 Display", "🤖 AI", "🗄️ Data", "🔗 MT5 FTP"
+    tab_accounts, tab_risk, tab_display, tab_ai, tab_data, tab_ftp, tab_network = st.tabs([
+        "🏦 Accounts", "⚖️ Risk Defaults", "🎨 Display", "🤖 AI", "🗄️ Data", "🔗 MT5 FTP", "🌐 Network"
     ])
 
     settings = get_settings()
@@ -51,6 +51,9 @@ def show():
 
     with tab_ftp:
         _ftp_settings(settings)
+
+    with tab_network:
+        _network_settings()
 
 
 
@@ -825,3 +828,57 @@ def _ftp_settings(settings: dict):
                     st.error(f"**{key}** — {err}")
                 else:
                     st.info(f"**{key}** — {new} new, {upd} updated")
+
+
+def _network_settings():
+    from utils.network_config import load_network_config, save_network_config, streamlit_launch_command
+
+    st.subheader("Streamlit Network / Access")
+    st.caption(
+        "Configure where the app binds and how it starts. "
+        "Saved settings are written to `data/network.json` and used by the local launcher."
+    )
+
+    cfg = load_network_config()
+
+    with st.form("network_settings"):
+        c1, c2 = st.columns(2)
+        server_address = c1.text_input(
+            "Server address",
+            value=cfg.get("server_address", "127.0.0.1"),
+            help="Use 127.0.0.1 for local-only, or 0.0.0.0 for LAN access."
+        )
+        server_port = c2.number_input(
+            "Server port",
+            value=int(cfg.get("server_port", 8503)),
+            min_value=1,
+            max_value=65535,
+            step=1
+        )
+
+        c3, c4 = st.columns(2)
+        server_headless = c3.checkbox(
+            "Headless mode",
+            value=bool(cfg.get("server_headless", True)),
+            help="Streamlit internal headless option."
+        )
+        open_browser = c4.checkbox(
+            "Open browser on launch",
+            value=bool(cfg.get("open_browser", True)),
+            help="You can turn this off on remote / RDP sessions."
+        )
+
+        st.markdown("ℹ️ Changing these values requires relaunching the app.")
+        if st.form_submit_button("💾 Save Network Settings", type="primary"):
+            save_network_config({
+                "server_address": server_address.strip(),
+                "server_port": int(server_port),
+                "server_headless": bool(server_headless),
+                "open_browser": bool(open_browser),
+            })
+            st.success("Network settings saved.")
+            st.rerun()
+
+    st.divider()
+    st.markdown("**Current launch command**")
+    st.code(streamlit_launch_command(cfg), language="bash")
