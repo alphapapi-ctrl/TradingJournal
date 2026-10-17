@@ -161,7 +161,10 @@ def create_server() -> MCPServer:
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request):
-        return JSONResponse({"status": "ok", "service": "trading-journal-mcp", "version": "1.0.0", "authentication": False, "pid": os.getpid()})
+        import database
+        return JSONResponse({"status": "ok", "service": "trading-journal-mcp", "version": "1.0.0", "authentication": False,
+                             "pid": os.getpid(), "hostname": socket.gethostname(),
+                             "database": str(Path(database.DB_PATH).resolve()), "app_root": str(Path(__file__).resolve().parents[1])})
 
     @server.custom_route("/exports/{filename}", methods=["GET"])
     async def download(request):

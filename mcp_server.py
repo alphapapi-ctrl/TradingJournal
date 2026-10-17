@@ -25,12 +25,21 @@ def lower_priority():
 def main():
     parser = argparse.ArgumentParser(description="Trading Journal MCP server, no authentication, private LAN only")
     parser.add_argument("--transport", choices=("streamable-http", "stdio"), default="streamable-http")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--config", type=Path, help="MCP startup settings (normally data/mcp/settings.json)")
     parser.add_argument("--database", type=Path, help="Optional database override; normally use the same data/journal.db as Streamlit")
-    parser.add_argument("--allowed-host", action="append", default=[], help="Additional LAN hostname/IP without a port; repeatable")
+    parser.add_argument("--allowed-host", action="append", default=None, help="Additional LAN hostname/IP without a port; repeatable")
     parser.add_argument("--allowed-origin", action="append", default=[], help="Explicit browser origin, if a browser-based MCP client needs one")
     args = parser.parse_args()
+    from utils.mcp_config import load_config
+    try:
+        config = load_config(args.config)
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.host = args.host if args.host is not None else config["bind_address"]
+    args.port = args.port if args.port is not None else config["port"]
+    args.allowed_host = args.allowed_host if args.allowed_host is not None else config["allowed_hosts"]
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
     for name in args.allowed_host:
@@ -41,8 +50,7 @@ def main():
         os.environ[variable] = "1"
     priority_lowered = lower_priority()
     import database
-    if args.database:
-        database.DB_PATH = args.database.expanduser().resolve()
+    database.DB_PATH = args.database.expanduser().resolve() if args.database else Path(config["database"])
     database.init_db()
     try:
         from journal_mcp.server import create_server, http_app

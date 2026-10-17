@@ -41,6 +41,75 @@ For a new installation, first create the virtual environment with
 `python -m venv .venv`. The `-Install` option then installs both the journal's
 existing dependencies and the additional MCP dependencies.
 
+## Automatic startup and Settings
+
+After pulling the update on the journal/MT5 computer, install the optional
+dependencies once if needed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-mcp.txt
+```
+
+Open **Settings → MCP / AI Access** in the journal. This shows the live server,
+database path, connection URL, hostname acceptance, login task and setup
+requirements. Set the connection hostname to `mt5tools` (or use its LAN IP),
+then click **Install / update MCP login task**. The setup acts on the computer
+running the journal, under its Windows account. It uses that journal's database.
+The page can also start and stop the task. Refresh status after startup.
+
+Alternatively, run this from the journal folder on that computer:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_mcp_task.ps1 -ConnectionHost mt5tools -AllowedHost mt5tools -StartNow
+```
+
+The default task is **Trading Journal MCP**. It runs quietly 15 seconds after
+the installing account logs in, without a stored password or administrator
+privileges. Keep that account logged in, as with your MT5 login tasks. Windows
+policy may require an elevated PowerShell to register a task; use the same
+journal account if so. The journal browser task remains separate.
+
+The task uses the journal's `pythonw.exe`, has no runtime expiry, prevents
+duplicate task instances and retries a failed service up to three times at
+one-minute intervals. A small supervisor sleeps while the below-normal-priority
+server is running; it does not poll the journal or generate reports. If MCP is
+already running from this installation with the same database, it monitors that
+process instead of starting a second server. An occupied port belonging to a
+different journal is rejected.
+
+```powershell
+# Inspect startup without changing anything
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_mcp_task.ps1 -Action Status
+
+# Start / stop the installed login task and its server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_mcp_task.ps1 -Action Start
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_mcp_task.ps1 -Action Stop
+
+# Preview installation: no task/config/database changes
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_mcp_task.ps1 -ConnectionHost mt5tools -Preview
+```
+
+Stop the task before updating its settings. If MCP was started manually, stop
+it too before applying a new hostname, port or database. Install/update the task
+and start it again. The script refuses to replace a task belonging to another
+configuration; choose a different `-TaskName` if necessary. Disable or delete the
+task in Windows Task Scheduler to remove login startup.
+
+Startup preferences are saved in **`data/mcp/settings.json`**, including the
+hostname aliases, port and database path. Both the task and manual launcher read
+this file, so `mt5tools` survives restarts. This machine-specific file is ignored
+by Git. Logs live in the `mcp` folder beside the selected database:
+`scheduled-task.log`, `server.stdout.log`, `server.stderr.log` and `server.pid`.
+`/health` identifies the machine and absolute database path for verification.
+Settings status is checked when the page renders or you refresh, with a short
+cache; it does not run a background monitoring service.
+
+Firewall access and hostname resolution are separate requirements: allow the
+MCP TCP port on the private LAN and map `mt5tools` to `192.168.2.234` on each
+client that uses the alias. The Settings hostname check validates server
+acceptance locally; confirm DNS and firewall access from the client by opening
+`http://mt5tools:8765/health`.
+
 ## Connect from your main trading PC
 
 In your AI application's MCP settings, add a **Streamable HTTP** server:
@@ -178,7 +247,8 @@ features require the same data sources and configuration as the browser journal.
 
 ## Resource use and calculation limits
 
-- One server process and **one tool operation at a time**; no model runtime,
+- One MCP server process (plus a small supervisor when using the login task) and
+  **one tool operation at a time**; no model runtime,
   polling, scheduled analysis, auto-sync, or automatic cache updates.
 - Below-normal Windows process priority and one computational-library thread.
 - Imports and market/replay/reference queries use short-lived helper processes

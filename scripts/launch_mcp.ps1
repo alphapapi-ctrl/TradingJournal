@@ -1,9 +1,10 @@
 param(
-    [string]$BindAddress = "0.0.0.0",
-    [ValidateRange(1, 65535)][int]$Port = 8765,
+    [string]$BindAddress = "",
+    [ValidateRange(0, 65535)][int]$Port = 0,
     [string[]]$AllowedHost = @(),
     [string[]]$AllowedOrigin = @(),
     [string]$Database = "",
+    [string]$ConfigPath = "",
     [switch]$Install,
     [switch]$Background
 )
@@ -14,6 +15,15 @@ $journalPython = Join-Path $journalRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $journalPython)) {
     throw "Journal virtual environment missing. Set up the journal's .venv first."
 }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $journalRoot "data\mcp\settings.json" }
+$ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
+$configJson = & $journalPython (Join-Path $PSScriptRoot "mcp_config.py") --config $ConfigPath
+if ($LASTEXITCODE -ne 0) { throw "Cannot read MCP startup settings." }
+$mcpConfig = $configJson | ConvertFrom-Json
+if (-not $BindAddress) { $BindAddress = $mcpConfig.bind_address }
+if (-not $Port) { $Port = [int]$mcpConfig.port }
+if (-not $PSBoundParameters.ContainsKey("AllowedHost")) { $AllowedHost = @($mcpConfig.allowed_hosts) }
+if (-not $Database) { $Database = $mcpConfig.database }
 if ($Install) {
     & $journalPython -m pip install -r (Join-Path $journalRoot "requirements.txt") -r (Join-Path $journalRoot "requirements-mcp.txt")
     if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
@@ -31,7 +41,7 @@ try {
     }
 } catch { }
 
-$journalArgs = @((Join-Path $journalRoot "mcp_server.py"), "--host", $BindAddress, "--port", "$Port")
+$journalArgs = @((Join-Path $journalRoot "mcp_server.py"), "--config", $ConfigPath, "--host", $BindAddress, "--port", "$Port")
 if ($Database) {
     $Database = [System.IO.Path]::GetFullPath($Database)
     $journalArgs += @("--database", $Database)

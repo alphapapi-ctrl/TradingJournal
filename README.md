@@ -77,6 +77,10 @@ below-normal priority, one tool at a time, and no background polling or model ru
 On the journal machine, run `launch_mcp.bat -Install -Background` once. Connect
 your AI application's **Streamable HTTP** MCP client to
 `http://JOURNAL-PC:8765/mcp`, replacing `JOURNAL-PC` with its actual hostname/IP.
+Use **Settings → MCP / AI Access** to check server/database status, install the
+quiet Windows login task, and view connection/setup requirements. Or run
+`scripts/setup_mcp_task.ps1 -ConnectionHost mt5tools -StartNow` in PowerShell on
+the journal computer. Startup preferences stay in its ignored `data/mcp/` folder.
 See [MCP_SETUP.md](MCP_SETUP.md) for deployment, supported tools, resource
 measurements, connection checks, and stopping the service.
 
