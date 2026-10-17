@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryFile
 
 from database import DB_PATH
 
@@ -10,9 +11,9 @@ from database import DB_PATH
 def _is_writable_dir(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)
-        probe = path / "._startup_check"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
+        # Probe a new, unique temporary file, never an application data file.
+        with TemporaryFile(dir=path, prefix="._startup_check_") as probe:
+            probe.write(b"ok")
         return True
     except Exception:
         return False
@@ -21,9 +22,12 @@ def _is_writable_dir(path: Path) -> bool:
 def _is_writable_file(path: Path) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("ok", encoding="utf-8")
-        path.unlink(missing_ok=True)
-        return True
+        if path.exists():
+            # Opening without a truncating/creating mode checks permissions
+            # without changing database bytes, settings or file timestamps.
+            with path.open("r+b"):
+                return True
+        return _is_writable_dir(path.parent)
     except Exception:
         return False
 

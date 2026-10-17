@@ -13,6 +13,7 @@ FILES = (
     "scripts/check_mcp.py", "scripts/start_mcp_background.py", "scripts/package_mcp.py", "MCP_SETUP.md", "README.md",
     "scripts/setup_mcp_task.ps1", "scripts/run_mcp_scheduled.py", "scripts/mcp_config.py",
     "utils/mcp_config.py", "utils/mcp_control.py", "utils/mcp_settings_ui.py", "pages/settings.py",
+    "utils/runtime_checks.py",
 )
 
 
@@ -20,6 +21,7 @@ def main():
     files = [ROOT / name for name in FILES]
     files += sorted((ROOT / "journal_mcp").glob("*.py"))
     files += sorted((ROOT / "tests").glob("test_*mcp*.py"))
+    files.append(ROOT / "tests" / "test_runtime_checks.py")
     for path in files:
         if not path.is_file() or not path.resolve().is_relative_to(ROOT):
             raise RuntimeError(f"Missing or invalid source file: {path}")
