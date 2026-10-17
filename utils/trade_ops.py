@@ -35,8 +35,8 @@ def upsert_trade_from_broker(trade: dict) -> tuple[int, bool]:
     """Insert or update trade by broker_trade_id. Returns (id, is_new)."""
     if trade.get("broker_trade_id"):
         existing = fetch_one(
-            "SELECT id FROM trades WHERE broker_trade_id=? AND broker=?",
-            (trade["broker_trade_id"], trade.get("broker", ""))
+            "SELECT id FROM trades WHERE broker_trade_id=? AND broker=? AND account_id IS ?",
+            (trade["broker_trade_id"], trade.get("broker", ""), trade.get("account_id"))
         )
         if existing:
             execute("""

@@ -1,105 +1,57 @@
 """
 Database layer for Trading Journal — SQLite (sqlite3).
 """
-import os
 import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
+from uuid import uuid4
 from pathlib import Path
 
 _DATA_DIR = Path(__file__).parent / "data"
-_PRIMARY_DB_PATH = _DATA_DIR / "journal.db"
-_LEGACY_DB_PATH = _DATA_DIR / "trading_journal.db"
-_DB_PATH: Path | None = None
+DB_PATH = _DATA_DIR / "journal.db"
+_transaction_connection = ContextVar("journal_transaction_connection", default=None)
 
 
-def _resolve_db_path() -> Path:
-    # Environment override for deployments where the DB is kept outside the app folder.
-    override = os.getenv("TRADING_JOURNAL_DB_PATH") or os.getenv("TJ_DB_PATH")
-    if override:
-        return Path(override).expanduser()
+@contextmanager
+def transaction(write=True):
+    """Share one atomic connection across helpers in this thread/request.
 
-    # Prefer a populated DB file when multiple local DBs are present.
-    candidates = _discover_db_candidates()
-    if candidates:
-        ranked = sorted(
-            ((_db_quality_score(p), p) for p in candidates),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        best_score, best_path = ranked[0]
-        if best_score > 0:
-            return best_path
-
-    return _PRIMARY_DB_PATH
-
-
-def _discover_db_candidates() -> list[Path]:
-    # Keep this intentionally local and scoped so "git pull" or restores won't wipe history.
-    if not _DATA_DIR.exists():
-        return [_PRIMARY_DB_PATH]
-    extensions = ("*.db", "*.sqlite", "*.sqlite3")
-    found: list[Path] = []
-    for pattern in extensions:
-        found.extend(_DATA_DIR.glob(pattern))
-    if _PRIMARY_DB_PATH not in found:
-        found.append(_PRIMARY_DB_PATH)
-    if _LEGACY_DB_PATH not in found:
-        found.append(_LEGACY_DB_PATH)
-    # de-dup and prefer explicit app files first when scores tie
-    deduped = []
-    seen = set()
-    for p in found:
-        s = str(p.resolve())
-        if s not in seen:
-            deduped.append(p)
-            seen.add(s)
-    return deduped
-
-
-def _db_quality_score(path: Path) -> int:
-    # Lightweight signal for whether this file already has app data.
-    # Priority: can open + has expected table + row count on key tables.
+    Existing UI calls keep their original one-operation behaviour. MCP uses
+    this to make multi-step actions atomic and reports consistent snapshots.
+    """
+    active = _transaction_connection.get()
+    if active is not None:
+        savepoint = "journal_" + uuid4().hex
+        active.execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield active
+            active.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException:
+            active.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            active.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        return
+    conn = get_connection()
+    token = _transaction_connection.set(conn)
     try:
-        conn = sqlite3.connect(str(path), timeout=5)
-        c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
-        has_trades = c.fetchone() is not None
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
-        has_accounts = c.fetchone() is not None
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='journal_entries'")
-        has_journal = c.fetchone() is not None
-        if not (has_trades or has_accounts or has_journal):
-            conn.close()
-            return 0
-
-        def _count_rows(table: str) -> int:
-            try:
-                c.execute(f"SELECT COUNT(*) FROM {table}")
-                return int(c.fetchone()[0] or 0)
-            except Exception:
-                return 0
-
-        rows = _count_rows("trades") + _count_rows("journal_entries")
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        _transaction_connection.reset(token)
         conn.close()
-        return (20 if has_trades else 0) + (10 if has_accounts else 0) + rows
-    except Exception:
-        return 0
-
-
-
-DB_PATH: Path = _resolve_db_path()
 
 def _data_dir():
     _DATA_DIR.mkdir(exist_ok=True)
     return _DATA_DIR
 
 def get_connection():
-    global _DB_PATH
-    _DB_PATH = _resolve_db_path()
-    global DB_PATH
-    DB_PATH = _DB_PATH
     _data_dir()
-    Path(_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH), timeout=10)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -422,6 +374,9 @@ def _seed_default_templates():
 # ─── CRUD helpers ────────────────────────────────────────────────────────────
 
 def fetch_all(query, params=()):
+    active = _transaction_connection.get()
+    if active is not None:
+        return [dict(r) for r in active.execute(query, params).fetchall()]
     try:
         conn = get_connection()
         c = conn.cursor()
@@ -441,6 +396,10 @@ def fetch_all(query, params=()):
         raise
 
 def fetch_one(query, params=()):
+    active = _transaction_connection.get()
+    if active is not None:
+        row = active.execute(query, params).fetchone()
+        return dict(row) if row else None
     try:
         conn = get_connection()
         c = conn.cursor()
@@ -460,6 +419,9 @@ def fetch_one(query, params=()):
         raise
 
 def execute(query, params=()):
+    active = _transaction_connection.get()
+    if active is not None:
+        return active.execute(query, params).lastrowid
     try:
         conn = get_connection()
         c = conn.cursor()

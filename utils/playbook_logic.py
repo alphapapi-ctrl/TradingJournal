@@ -93,6 +93,11 @@ def evaluate_trade_risk(playbook_id: int, rules_met: dict[int, bool]) -> dict:
     - warnings: list of warning strings
     """
     pb = get_playbook(playbook_id)
+    return evaluate_playbook_rules(pb, rules_met)
+
+
+def evaluate_playbook_rules(pb: dict | None, rules_met: dict) -> dict:
+    """Pure rule evaluation for an already loaded playbook (e.g. batch reports)."""
     if not pb:
         return {}
 

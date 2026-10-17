@@ -66,6 +66,20 @@ A local SQLite database is created at `data/journal.db` on first run.
 All data stays on your machine — the `data/` directory is git-ignored because it contains
 your trades, journal entries and any stored credentials.
 
+## AI access over the local network (MCP)
+
+The optional MCP server gives compatible AI applications access to journal records,
+trade/position management, playbooks, reports, imports/exports, settings, and
+replay/reference data. It supports hosted or local models through your AI application.
+The server runs alongside the journal with no authentication, private LAN access,
+below-normal priority, one tool at a time, and no background polling or model runtime.
+
+On the journal machine, run `launch_mcp.bat -Install -Background` once. Connect
+your AI application's **Streamable HTTP** MCP client to
+`http://JOURNAL-PC:8765/mcp`, replacing `JOURNAL-PC` with its actual hostname/IP.
+See [MCP_SETUP.md](MCP_SETUP.md) for deployment, supported tools, resource
+measurements, connection checks, and stopping the service.
+
 ## Playbook Logic
 
 Rules have three types:

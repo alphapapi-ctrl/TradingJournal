@@ -1,0 +1,4 @@
+# Optional LAN/stdio MCP server. No model runtime or CLI extras required.
+mcp==2.3.0
+# Required by the journal's MT5 HTML importer; loaded only for an import.
+lxml>=5
