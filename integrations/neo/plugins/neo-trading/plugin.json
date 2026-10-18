@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "neo-trading",
+  "version": "0.5.0",
+  "description": "Neo daily preparation, psychology and pattern journalling, trade management, evidence, sizing and reconciliation through the journal MCP."
+}

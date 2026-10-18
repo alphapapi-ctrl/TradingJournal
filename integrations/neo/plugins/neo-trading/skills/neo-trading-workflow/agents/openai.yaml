@@ -1,0 +1,11 @@
+interface:
+  display_name: "Neo Trading"
+  short_description: "Neo preparation, psychology, journalling and trade reviews"
+  default_prompt: "Use $neo-trading-workflow to start today's Neo demo session, load the baseline and journal handover, and prepare the pre-trade review."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "trading_journal"
+      description: "Existing personal trading journal MCP connection"
+policy:
+  allow_implicit_invocation: true
