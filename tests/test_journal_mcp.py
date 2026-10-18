@@ -258,7 +258,7 @@ class JournalCase(unittest.TestCase):
         async def run():
             async with Client(create_server()) as client:
                 tools = (await client.list_tools()).tools
-                self.assertEqual(len(tools), 22)
+                self.assertEqual(len(tools), 33)
                 self.assertTrue(all(tool.description for tool in tools))
                 result = await client.call_tool("list_records", {"entity": "accounts"})
                 self.assertFalse(result.is_error)
@@ -308,7 +308,7 @@ class TransportCase(unittest.TestCase):
                             self.assertFalse(result.is_error, str(result))
                             diagnostics = await client.call_tool("diagnostics")
                             self.assertFalse(diagnostics.structured_content["authentication"])
-                            self.assertEqual(len((await client.list_tools()).tools), 22)
+                            self.assertEqual(len((await client.list_tools()).tools), 33)
                             baseline = diagnostics.structured_content
                             self.assertFalse(baseline["data_libraries_in_main_process"])
                             account_id = result.structured_content["id"]

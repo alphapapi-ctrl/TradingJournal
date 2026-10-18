@@ -60,6 +60,15 @@ def update_trade_playbook(trade_id, playbook_id, rules_met: dict, risk_score: fl
         WHERE id=?
     """, (playbook_id, json.dumps({str(k): v for k, v in rules_met.items()}), risk_score, trade_id))
 
+
+def price_pnl(trade, exit_price, quantity):
+    """Gross account-currency P&L using the trade's persisted contract/FX basis."""
+    multiplier = 1.0
+    if trade.get("instrument_spec_id"):
+        from journal_mcp.neo import validate_trade_economics
+        multiplier = validate_trade_economics(trade)["account_point_value"]
+    return round((exit_price - trade["entry_price"]) * quantity * (1 if trade["direction"] == "LONG" else -1) * multiplier, 4)
+
 def close_trade(trade_id, exit_price: float, exit_time: str = None,
                 pnl: float = None, extra_commission: float = 0.0):
     """Fully close an open trade. P&L auto-computed from prices if not given."""
@@ -70,7 +79,7 @@ def close_trade(trade_id, exit_price: float, exit_time: str = None,
     ep   = float(t.get("entry_price") or 0)
     sign = 1 if t["direction"] == "LONG" else -1
     if pnl is None:
-        pnl = (exit_price - ep) * qty * sign
+        pnl = price_pnl(t, exit_price, qty)
     new_comm = float(t.get("commission") or 0) + abs(extra_commission)
     execute("""UPDATE trades SET exit_price=?, exit_time=?, pnl=?, commission=?,
                status='closed', updated_at=datetime('now') WHERE id=?""",
@@ -98,7 +107,7 @@ def partial_close_trade(trade_id, close_qty: float, exit_price: float,
 
     ep   = float(t.get("entry_price") or 0)
     sign = 1 if t["direction"] == "LONG" else -1
-    pnl  = (exit_price - ep) * close_qty * sign
+    pnl  = price_pnl(t, exit_price, close_qty)
 
     orig_comm   = float(t.get("commission") or 0)
     closed_comm = orig_comm * (close_qty / qty) + abs(extra_commission)
@@ -124,6 +133,8 @@ def partial_close_trade(trade_id, close_qty: float, exit_price: float,
         "status":          "closed",
     }
     new_id = insert_trade(closed_part)
+    execute("UPDATE trades SET instrument_spec_id=?,sizing_assumptions=? WHERE id=?",
+            (t.get("instrument_spec_id"), t.get("sizing_assumptions"), new_id))
 
     # Keep the closed slice in the same merged position (if any) so it journals as one unit
     if t.get("position_id"):
@@ -295,11 +306,13 @@ def save_journal_entry(entry_id, entry_type, entry_date, analysis, execution, ps
                        custom_fields=None, stage="post", playbook_id=None,
                        trade_category=None):
     if entry_id:
-        execute("""
+        custom_sql = "custom_fields=?," if custom_fields is not None else ""
+        custom_params = (json.dumps(custom_fields),) if custom_fields is not None else ()
+        execute(f"""
             UPDATE journal_entries SET analysis=?, execution=?, psychology=?, lessons=?, grade=?, mood=?,
-            custom_fields=?, stage=?, playbook_id=?, trade_category=?, updated_at=datetime('now') WHERE id=?
+            {custom_sql} stage=?, playbook_id=?, trade_category=?, updated_at=datetime('now') WHERE id=?
         """, (analysis, execution, psychology, lessons, grade, mood,
-              json.dumps(custom_fields) if custom_fields else None,
+              *custom_params,
               stage, playbook_id, trade_category, entry_id))
         return entry_id
     else:

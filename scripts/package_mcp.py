@@ -8,12 +8,13 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
-    "database.py", "utils/trade_ops.py", "utils/playbook_logic.py", "mcp_server.py", "requirements-mcp.txt",
+    "database.py", "utils/trade_ops.py", "utils/playbook_logic.py", "mcp_server.py", "requirements-mcp.txt", "requirements.txt",
     "launch_mcp.bat", "scripts/launch_mcp.ps1", "scripts/stop_mcp.ps1",
     "scripts/check_mcp.py", "scripts/start_mcp_background.py", "scripts/package_mcp.py", "MCP_SETUP.md", "README.md",
     "scripts/setup_mcp_task.ps1", "scripts/run_mcp_scheduled.py", "scripts/mcp_config.py",
     "utils/mcp_config.py", "utils/mcp_control.py", "utils/mcp_settings_ui.py", "pages/settings.py",
     "utils/runtime_checks.py",
+    "utils/neo_ui.py", "pages/journal.py", "NEO_MCP.md",
 )
 
 

@@ -2,3 +2,7 @@
 mcp==2.3.0
 # Required by the journal's MT5 HTML importer; loaded only for an import.
 lxml>=5
+# Screenshot validation (loaded only on upload).
+Pillow>=10
+# IANA timezone data for session/trading-day validation on Windows.
+tzdata>=2024.1

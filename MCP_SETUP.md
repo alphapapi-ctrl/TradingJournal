@@ -193,7 +193,7 @@ for client configuration and restart behaviour.
 
 ## What the AI can do
 
-The server advertises 22 tools with descriptions and input schemas:
+The server advertises 33 tools with descriptions and input schemas:
 
 | Capability | Tools |
 | --- | --- |
@@ -209,6 +209,14 @@ The server advertises 22 tools with descriptions and input schemas:
 | Reference day filters, bars, index rebuild, cache maintenance | `reference_data` |
 | Replay sessions and simulated trades | `replay_action` |
 | Manual MT5 FTP sync, database backup, resource diagnostics | `ftp_sync`, `backup_database`, `diagnostics` |
+| Overnight sessions, versioned candidate plans | `save_session`, `save_candidate` |
+| Immutable management decisions and confirmed fills | `append_management_event`, `record_fill`, `reconcile_candidate` |
+| Balance/equity snapshots, explicit account risk regimes, verified instrument economics | `save_account_snapshot`, `save_risk_regime`, `save_instrument_spec`, `size_candidate` |
+| Durable screenshot upload, retrieval and temporary download access | `upload_evidence`, `read_evidence` |
+
+See [NEO_MCP.md](NEO_MCP.md) for the full Neo workflow, input fields, scoring
+examples and remaining real-account integration checks. Journal → **Evidence &
+Neo** displays screenshots, plan revisions, handovers and management history.
 
 Record editing covers accounts, trades, daily/weekly/trade journal entries,
 all pre/post analysis and psychology fields, grades and categories, templates,
@@ -225,6 +233,11 @@ field. Related writes are transactional. Deleting trades/positions/accounts
 retains journal text and removes its invalid links. Account deletion retains
 trading history. Journal operations do not place orders with MT5 or brokers.
 Replay uses simulated Demo accounts and historical bar validation.
+Records with durable Neo history are retained instead of deleted. New workflow
+history is append-only. `save_record` and `trade_action` support idempotency keys
+and revision guards; session/candidate updates require an expected revision.
+Four-state playbook evidence separates readiness from score/completeness while
+the original boolean calls preserve their existing semantics.
 
 Broker import accepts CSV/HTML text, or base64 for binary/UTF-16 exports, with an
 existing account ID. `dry_run` defaults to true; repeat with false to save.
@@ -236,13 +249,18 @@ Reports return calculated data and can be saved as Markdown/JSON. CSV/JSON
 exports are paginated. Saved outputs live under `data/mcp/exports/`; retrieve
 them through `/exports/FILENAME`, `journal://exports/FILENAME`, or `read_export`.
 Backups use SQLite's online backup under `data/mcp/backups/` and include
-committed changes in the WAL. They cover the database, not external market caches,
-screenshots, or file-based preferences. Output files remain until you remove
+committed changes in the WAL, including screenshots uploaded through the evidence
+tools. They exclude external market caches, external screenshot files and
+file-based preferences. Output files remain until you remove
 them; no automatic cleanup runs in the background.
 
 The browser remains the interactive chart/replay surface. MCP exposes its
 underlying data and operations; it does not manipulate browser tabs, chart
-dragging, playback animation, or screenshots. Optional market/FTP/School Run
+dragging, playback animation, or screenshot capture. Uploaded screenshots can be
+stored and retrieved; chart access/capture still requires a chart integration.
+Evidence HTTP downloads require an expiring bearer token and the same LAN/host
+checks; MCP retains its intentionally unauthenticated private-LAN access model.
+Optional market/FTP/School Run
 features require the same data sources and configuration as the browser journal.
 
 ## Resource use and calculation limits

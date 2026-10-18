@@ -9,17 +9,21 @@ from typing import Any
 import database as db
 from utils import trade_ops as trades
 from utils import playbook_logic as playbooks
+from journal_mcp import guards
+from journal_mcp.neo_schema import TABLES
 
 ENTITIES = (
     "accounts", "trades", "positions", "journal_entries", "journal_templates",
     "playbooks", "playbook_rules", "playbook_risk_rules", "risk_setups",
-    "replay_sessions", "import_history", "day_features",
+    "replay_sessions", "import_history", "day_features", *TABLES,
 )
-READ_ONLY = {"import_history", "day_features"}
-JSON_FIELDS = {"raw_data", "playbook_rules_met", "custom_fields", "pending_orders"}
+READ_ONLY = {"import_history", "day_features", *TABLES}
+JSON_FIELDS = {"raw_data", "playbook_rules_met", "custom_fields", "pending_orders", "sizing_assumptions"}
 REFERENCES = {
     "account_id": "accounts", "trade_id": "trades", "position_id": "positions",
     "playbook_id": "playbooks", "trigger_rule_id": "playbook_rules",
+    "session_id": "trading_sessions", "candidate_id": "candidates",
+    "instrument_spec_id": "instrument_specs", "template_id": "journal_templates",
 }
 ENUMS = {
     "direction": {"LONG", "SHORT"}, "entry_type": {"daily", "weekly", "trade"},
@@ -38,6 +42,19 @@ DEFAULTS = {
 }
 
 
+def field_enum(entity, key):
+    specific = {
+        ("playbooks", "direction"): {"LONG", "SHORT", "BOTH"},
+        ("evidence", "stage"): {"pre", "management", "post"},
+        ("candidates", "status"): {"draft", "assessed", "blocked", "pending", "cancelled", "open", "closed"},
+        ("trading_sessions", "status"): {"active", "completed"},
+        ("risk_regimes", "mode"): {"demo", "live", "prop"},
+        ("management_events", "action_status"): {"observed", "proposed", "executed", "cancelled"},
+        ("fill_events", "kind"): {"entry", "exit"},
+    }
+    return specific.get((entity, key), ENUMS.get(key))
+
+
 def columns(entity: str) -> dict:
     if entity not in ENTITIES:
         raise ValueError(f"Unknown entity. Choose one of: {', '.join(ENTITIES)}")
@@ -45,7 +62,9 @@ def columns(entity: str) -> dict:
 
 
 def writable(entity: str) -> set:
-    fields = set(columns(entity)) - {"id", "created_at", "updated_at"}
+    fields = set(columns(entity)) - {"id", "created_at", "updated_at", "revision"}
+    if entity in READ_ONLY:
+        return set()
     if entity == "positions":
         fields &= {"notes", "playbook_id"}
     if entity == "trades":
@@ -62,7 +81,7 @@ def schema(entity: str | None = None) -> dict:
             "create": name not in READ_ONLY and name != "positions",
             "fields": {key: {"type": col["type"], "required": bool(col["notnull"] and col["dflt_value"] is None),
                              "default_sql": col["dflt_value"], "writable": key in writable(name),
-                             **({"enum": sorted({"LONG", "SHORT", "BOTH"} if key == "direction" and name == "playbooks" else ENUMS[key])} if key in ENUMS else {})}
+                             **({"enum": sorted(field_enum(name, key))} if field_enum(name, key) else {})}
                        for key, col in fields.items()},
         }
     return {"entities": result, "notes": [
@@ -70,6 +89,9 @@ def schema(entity: str | None = None) -> dict:
         "Use trade_action for close/partial_close/reopen and position_action to merge/unmerge trades.",
         "Use assign_playbook to store rule checks and calculated risk scores.",
         "Updates are patches: omitted fields stay unchanged; null clears a nullable field.",
+        "save_record/trade_action accept idempotency_key and expected_revision. A conflicting retry fails; read and merge after a revision conflict. UI updates also advance revisions.",
+        "Neo entities use dedicated workflow tools; list_records/get_record read their history. candidate_plans, events, evidence, snapshots and instrument specs are append-only.",
+        "Playbook thresholds are minimum guards: their consequence applies on failure. Passing all minima defaults to normal / multiplier 1. A score is checklist composition, never probability or a risk-percentage recommendation.",
         "JSON fields accept objects/arrays; raw_data also accepts plain notes text.",
         "Amounts use the account currency. No FX conversion is performed.",
         "These tools manage journal records only; they do not send orders to MT5 or brokers.",
@@ -92,6 +114,11 @@ def details(entity: str, record_id: int) -> dict:
         row["trades"] = db.fetch_all("SELECT * FROM trades WHERE position_id=? ORDER BY id", (record_id,))
     if entity == "playbooks":
         row = playbooks.get_playbook(record_id)
+    if entity == "candidates":
+        row["plans"] = db.fetch_all("SELECT * FROM candidate_plans WHERE candidate_id=? ORDER BY version", (record_id,))
+        row["fills"] = db.fetch_all("SELECT * FROM fill_events WHERE candidate_id=? ORDER BY id", (record_id,))
+    if entity == "trading_sessions":
+        row["candidates"] = db.fetch_all("SELECT * FROM candidates WHERE session_id=? ORDER BY id", (record_id,))
     return row
 
 
@@ -107,7 +134,7 @@ def where_clause(entity: str, filters: dict | None = None, start_date: str | Non
         clauses.append(f'"{key}" IS NULL' if value is None else f'"{key}"=?')
         if value is not None:
             params.append(value)
-    time_field = next((x for x in ("entry_time", "entry_date", "date", "day", "created_at", "imported_at") if x in fields), None)
+    time_field = next((x for x in ("entry_time", "entry_date", "date", "day", "observed_at", "captured_at", "filled_at", "exchange_date", "effective_at", "verified_at", "created_at", "imported_at") if x in fields), None)
     if start_date or end_date:
         if not time_field:
             raise ValueError("This entity has no date field")
@@ -185,11 +212,22 @@ def _validate(entity: str, patch: dict, old: dict | None = None) -> dict:
         if key in ("is_default", "is_replay", "trigger_rule_must_be") and value not in (0, 1):
             raise ValueError(f"{key} must be 0 or 1")
     full = {**DEFAULTS.get(entity, {}), **(old or {}), **data}
+    if entity in ("journal_entries", "trades"):
+        for key, version_key, table in (("template_id", "template_version", "journal_templates"), ("playbook_id", "playbook_version", "playbooks")):
+            if key in data and version_key not in data:
+                linked = get_record(table, data[key]) if data[key] is not None else None
+                data[version_key] = f"{linked.get('version') or '1'}@{linked['revision']}" if linked else None
     for key, col in fields.items():
         if col["notnull"] and not col["pk"] and col["dflt_value"] is None:
             if full.get(key) is None or (isinstance(full.get(key), str) and not full[key].strip()):
                 raise ValueError(f"{key} is required")
     if entity == "trades":
+        if full.get("instrument_spec_id") is not None:
+            from journal_mcp.neo import validate_trade_economics
+            assumptions = full.get("sizing_assumptions") or {}
+            if isinstance(assumptions, str):
+                assumptions = json.loads(assumptions)
+            data["sizing_assumptions"] = json.dumps({**assumptions, **validate_trade_economics(full)}, allow_nan=False)
         if full.get("status") not in ("open", "closed"):
             raise ValueError("Trade status must be open or closed")
         dividend = full.get("trade_type") == "dividend"
@@ -214,6 +252,11 @@ def _validate(entity: str, patch: dict, old: dict | None = None) -> dict:
         if full.get("entry_time") and full.get("exit_time"):
             validate_exit_time(full["entry_time"], full["exit_time"])
     if entity == "journal_entries":
+        for link, table in (("candidate_id", "candidates"), ("session_id", "trading_sessions")):
+            if full.get(link):
+                linked = get_record(table, full[link])
+                if full.get("account_id") != linked["account_id"]:
+                    raise ValueError("Journal entry account does not match its candidate/session")
         if full.get("trade_id") and full.get("position_id"):
             raise ValueError("Link an entry to a trade OR a position")
         target = None
@@ -275,7 +318,17 @@ def _refresh_rules(playbook_id: int):
         trades.update_trade_playbook(row["id"], playbook_id, checks, result["risk_score"])
 
 
-def save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
+def save_record(entity: str, data: dict, record_id: int | None = None,
+                expected_revision: int | None = None, idempotency_key: str | None = None) -> dict:
+    with db.transaction():
+        fingerprint, cached = guards.replay(idempotency_key, "save_record", [entity, data, record_id, expected_revision])
+        if cached is not None:
+            return cached
+        guards.check_revision(get_record(entity, record_id) if record_id is not None else None, expected_revision)
+        return guards.remember(idempotency_key, fingerprint, _save_record(entity, data, record_id))
+
+
+def _save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
     if entity in READ_ONLY or (entity == "positions" and record_id is None):
         raise ValueError("This entity is generated; use import_trades, reference_data, or position_action")
     with db.transaction():
@@ -287,7 +340,7 @@ def save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
             full = {**(old or {}), **patch}
             # A manual closed trade can provide broker P&L explicitly for CFDs/options.
             if full["status"] == "closed" and "pnl" not in data and full.get("exit_price") is not None and (not old or set(data) & {"entry_price", "exit_price", "quantity", "direction"}):
-                patch["pnl"] = round((full["exit_price"] - full["entry_price"]) * full["quantity"] * (1 if full["direction"] == "LONG" else -1), 4)
+                patch["pnl"] = trades.price_pnl(full, full["exit_price"], full["quantity"])
             if old and old.get("position_id") and "account_id" in patch and patch["account_id"] != old["account_id"]:
                 raise ValueError("Unmerge before moving a constituent trade to another account")
         if entity in ("accounts", "journal_templates") and (patch.get("is_default") or (old and old.get("is_default") and "template_type" in patch)):
@@ -306,7 +359,7 @@ def save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
             names = ",".join(f'"{key}"' for key in patch)
             record_id = db.execute(f'INSERT INTO "{entity}" ({names}) VALUES ({",".join("?" for _ in patch)})', list(patch.values()))
             if "created_at" in columns(entity):
-                db.execute(f'UPDATE "{entity}" SET created_at=COALESCE(created_at,datetime(\'now\')) WHERE id=?', (record_id,))
+                db.execute(f'UPDATE "{entity}" SET created_at=datetime(\'now\') WHERE id=? AND created_at IS NULL', (record_id,))
         if entity == "positions" and "playbook_id" in patch:
             trades.set_position_playbook(record_id, patch["playbook_id"])
             db.execute("UPDATE trades SET playbook_rules_met=NULL,risk_score=NULL WHERE position_id=?", (record_id,))
@@ -358,7 +411,18 @@ def delete_record(entity: str, record_id: int) -> dict:
 
 def trade_action(action: str, trade_id: int, exit_price: float | None = None,
                  exit_time: str | None = None, close_quantity: float | None = None,
-                 pnl: float | None = None, extra_commission: float = 0) -> dict:
+                 pnl: float | None = None, extra_commission: float = 0,
+                 expected_revision: int | None = None, idempotency_key: str | None = None) -> dict:
+    with db.transaction():
+        fingerprint, cached = guards.replay(idempotency_key, "trade_action", [action, trade_id, exit_price, exit_time, close_quantity, pnl, extra_commission, expected_revision])
+        if cached is not None:
+            return cached
+        guards.check_revision(get_record("trades", trade_id), expected_revision)
+        result = _trade_action(action, trade_id, exit_price, exit_time, close_quantity, pnl, extra_commission)
+        return guards.remember(idempotency_key, fingerprint, result)
+
+
+def _trade_action(action, trade_id, exit_price=None, exit_time=None, close_quantity=None, pnl=None, extra_commission=0):
     with db.transaction():
         old = get_record("trades", trade_id)
         if action == "reopen":
@@ -374,6 +438,10 @@ def trade_action(action: str, trade_id: int, exit_price: float | None = None,
                 raise ValueError(f"{key} must be finite and nonnegative")
         if pnl is not None and not math.isfinite(pnl):
             raise ValueError("pnl must be finite")
+        if old.get("instrument_spec_id"):
+            from journal_mcp.neo import validate_trade_economics
+            validate_trade_economics({**old, "exit_price": exit_price,
+                                      "quantity": close_quantity if action == "partial_close" else old["quantity"]})
         entry_zone = datetime.fromisoformat(old["entry_time"]).tzinfo if old.get("entry_time") else None
         exit_time = exit_time or datetime.now(tz=entry_zone).isoformat(timespec="seconds")
         datetime.fromisoformat(exit_time)
@@ -450,12 +518,24 @@ def assign_playbook(playbook_id: int | None, rules_met: dict[str, bool] | None =
         return {"trade_ids": ids, "assessment": result}
 
 
-def evaluate_playbook(playbook_id: int, rules_met: dict[str, bool]) -> dict:
+def evaluate_playbook(playbook_id: int, rules_met: dict[str, bool] | None = None,
+                      evidence: dict | None = None) -> dict:
     pb = details("playbooks", playbook_id)
+    if evidence is not None:
+        if rules_met is not None:
+            raise ValueError("Supply rules_met or four-state evidence, not both")
+        from journal_mcp.neo import assess_evidence
+        return assess_evidence(pb, evidence)
+    rules_met = rules_met or {}
     valid = {str(rule["id"]) for rule in pb["rules"]}
     if set(rules_met) - valid or any(not isinstance(v, bool) for v in rules_met.values()):
         raise ValueError("rules_met must map this playbook's rule IDs to true/false")
-    return playbooks.evaluate_trade_risk(playbook_id, rules_met)
+    result = playbooks.evaluate_trade_risk(playbook_id, rules_met)
+    from journal_mcp.neo import assess_evidence
+    # Preserve the existing boolean interface: omitted booleans mean unmet.
+    # Four-state callers use evidence, where omissions remain unknown.
+    result.update(assess_evidence(pb, {key: {"status": "pass" if rules_met.get(key, False) else "fail"} for key in valid}))
+    return result
 
 
 def validate_exit_time(entry_time: str, exit_time: str):

@@ -84,6 +84,12 @@ the journal computer. Startup preferences stay in its ignored `data/mcp/` folder
 See [MCP_SETUP.md](MCP_SETUP.md) for deployment, supported tools, resource
 measurements, connection checks, and stopping the service.
 
+Neo trading workflows add durable screenshots, management/fill history, versioned
+candidate plans, overnight sessions, balance/risk snapshots and instrument/FX
+sizing. Use **Journal → Evidence & Neo** to review captures and decisions.
+See [NEO_MCP.md](NEO_MCP.md) for the workflow and input contracts. Existing records
+are preserved through an additive startup migration.
+
 ## Playbook Logic
 
 Rules have three types:

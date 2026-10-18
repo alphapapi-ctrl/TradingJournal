@@ -19,9 +19,9 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 
-from journal_mcp import operations, records, reporting
+from journal_mcp import operations, records, reporting, neo
 
 
 def isolated_call(operation: str, arguments: dict) -> dict:
@@ -77,12 +77,12 @@ def create_server() -> MCPServer:
         "journal_schema": "Discover record fields, required inputs and supported entities. Call before creating/editing records.",
         "list_records": "List/search/filter journal data with pagination (max 500). Entity: accounts, trades, positions, journal_entries, journal_templates, playbooks, playbook_rules, playbook_risk_rules, risk_setups, replay_sessions, import_history, day_features. Date filters are inclusive YYYY-MM-DD; filters are exact field/value matches. Use next_offset until null.",
         "get_record": "Get a record by entity and ID; positions include their trades and playbooks include rules/thresholds.",
-        "save_record": "Create a record or patch an existing one (record_id). Discover fields with journal_schema. Omissions preserve values; null clears nullable fields. Supports journal pre/post text, psychology, categories, templates, accounts, saved risk setups, playbooks/rules and replay state. Use dedicated tools for closes/merges/rule checks.",
+        "save_record": "Create or patch a record. Omissions preserve values; null clears nullable fields; custom_fields replaces the whole JSON field. Use expected_revision to reject stale writes and idempotency_key for safe retries. Discover fields with journal_schema. Dedicated Neo tools manage immutable plans, events, snapshots and evidence.",
         "delete_record": "Delete a record by entity/ID. Linked journal text is retained and unlinked; deleting a position preserves its trades. Deleting an account unlinks data without deleting trading history.",
         "trade_action": "Close, partial_close, or reopen a JOURNAL trade; no live orders. Close requires exit_price; partial_close also requires close_quantity. Optional pnl overrides price-based P&L for contract instruments. Updates merged totals and risk metadata atomically.",
         "position_action": "Merge 2–500 same-symbol, same-direction trades from one account, or unmerge an existing position. action: merge/unmerge. Unmerge retains individual trades and journal text.",
         "assign_playbook": "Assign/clear a playbook on exactly one trade or position. rules_met maps rule IDs (strings) to booleans. Calculates scores and propagates assignment to all position trades. Null playbook_id clears assignment.",
-        "evaluate_playbook": "Evaluate required/optional/bonus rules, OR groups and risk thresholds without saving. rules_met maps rule ID strings to true/false.",
+        "evaluate_playbook": "Evaluate rules without saving. Supply rules_met booleans (legacy: omissions mean unmet) OR evidence mapping rule IDs to {status: pass/fail/unknown/caution, evidence?, source?, observed_at?} (omissions stay unknown). Returns readiness separately from score composition/completeness. Thresholds are MINIMUM GUARDS: consequence applies on failure, all minima passed defaults normal/1. Scores are not probability or sizing instructions.",
         "generate_report": "Calculate performance, categories (Menaker), discipline, playbook compliance, risk-threshold outcomes and open holdings. kind: all/performance/categories/discipline/playbooks/risk/open_positions. Filter by account, inclusive dates, symbol or playbook. Different currencies are separated. Max 20,000 trades; equity curves sampled to 500 points.",
         "save_report": "Save a calculated report as markdown or JSON. Returns download_path and an MCP resource URI; optional filters match generate_report.",
         "export_records": "Export one page of records to CSV/JSON on the journal machine. Max 500 rows; next_offset indicates more pages. Returns a download path and resource URI.",
@@ -96,6 +96,17 @@ def create_server() -> MCPServer:
         "ftp_sync": "Explicitly run the journal's configured MT5 FTP import once. Does not start a polling thread or connect directly to trading terminals.",
         "backup_database": "Create a consistent SQLite online backup in data/mcp/backups, including committed WAL changes. External caches/files are separate.",
         "diagnostics": "Get this server's memory, CPU time, database location and lightweight runtime configuration.",
+        "save_session": "Create or patch an overnight trading session, keyed by session_key. data: session_key, account_id, exchange_date, local_date, timezone (IANA), label, baseline_version; optional status active/completed, review_block 0/1, review_reason, handover object, restart_decision. Updates require expected_revision. Review blocks carry to new sessions; clearing requires a recorded restart decision. Creates a linked daily entry.",
+        "save_candidate": "Create candidate data {candidate_key,session_id,symbol,direction,plan,reason}; later patch {plan,reason} or {status} with expected_revision. Plan: entry_price,stop_price,target_price,risk_pct,planned_cash_risk,baseline_version,playbook_id,template_id,checklist,notes. Creates a pre-trade entry; preserves the original and appends plan revisions. Status draft/assessed/blocked/pending/cancelled/open/closed; only actual fills establish open. No orders.",
+        "append_management_event": "Append immutable event data {event_key,journal_entry_id,observed_at,decision,reason,action_status}; optional candidate_id,trade_id,fill_event_id,before_stop,after_stop,before_target,after_target,rule,evidence_ids. Status observed/proposed/executed/cancelled. Stable event keys prevent duplicates. Does not modify broker orders or journal stop fields.",
+        "record_fill": "Append a CONFIRMED fill linked to an existing journal trade. data {candidate_id,trade_id,source,source_fill_id,filled_at,kind:entry/exit,price,quantity,commission,currency}; optional other_costs (positive fees), swap (signed credit/debit), verified gross pnl for exits, corrects_fill_id for append-only correction. Price in instrument quote, costs/pnl in account currency. Does not close or create journal trades; use trade_action for confirmed closes. Source fill IDs deduplicate.",
+        "reconcile_candidate": "Compare entry/exit fills, partial quantities, costs, journal P&L and original monetary R. Returns gaps; does not invent FX/P&L or change journal trades. All exit fills need verified gross account-currency P&L. Entry commissions allocated pro rata to realised quantity.",
+        "save_account_snapshot": "Append timestamped current balance/equity. data {account_id,balance,equity?,currency,source,observed_at,trading_day_timezone,trading_day_boundary:HH:MM}. Never substitutes initial balance. Snapshot and source retained for sizing.",
+        "save_risk_regime": "Append explicit per-account demo/live/prop policy. data {account_id,mode,risk_pct,source,effective_at,max_trade_risk?,max_combined_risk?,max_daily_loss?,notes?}. Cash limits use account currency. Demo never inherits into live/prop; prop requires all limits. No defaults are silently activated.",
+        "save_instrument_spec": "Append verified exact-contract instrument economics. data {symbol,version,quote_currency,contract_multiplier,point_value,tick_size,tick_value,quantity_step,min_quantity,source,verified_at}. point_value already includes contract multiplier; tick_value = point_value × tick_size. No assumed MNQ economics.",
+        "size_candidate": "Persist sizing as a plan revision using current-balance snapshot, explicit regime and verified instrument. Requires expected_revision and offset observed_at. FX is account units per quote unit with source/time when currencies differ. Optional costs_per_contract are account-currency round-trip allowance. Existing open risk/daily loss required for configured limits. Override is per-trade with reason. Quantity rounds down and never up to minimum. No orders.",
+        "upload_evidence": "Upload actual PNG/JPEG/WebP base64 bytes (max 8 MiB) with data {journal_entry_id,filename,mime_type,stage:pre/management/post,captured_at,symbol,timeframe,source,candidate_id?,trade_id?,chart_context?}. Validates image and hash, stores bytes in database. Never treats a path as an upload. List through list_records(evidence); use read_evidence for bytes/download capability.",
+        "read_evidence": "Read stored image in base64 chunks (max 256 KiB), with metadata/hash and a one-hour bearer download_path on this MCP host. Follow next_offset. Missing/expired tokens deny HTTP access; MCP itself retains the service's private-LAN access model.",
     }
 
     def register(function, name=None, read_only=False, destructive=False):
@@ -109,6 +120,8 @@ def create_server() -> MCPServer:
                 result = await anyio.to_thread.run_sync(work, limiter=limiter)
                 return clean_json(result)
             except (ValueError, TypeError, KeyError) as exc:
+                raise ToolError(str(exc)) from exc
+            except sqlite3.IntegrityError as exc:
                 raise ToolError(str(exc)) from exc
             except sqlite3.OperationalError as exc:
                 if "locked" in str(exc).lower() or "busy" in str(exc).lower():
@@ -144,6 +157,12 @@ def create_server() -> MCPServer:
     register(operations.ftp_sync)
     register(operations.backup_database)
     register(operations.diagnostics, read_only=True)
+    for function in (neo.save_session, neo.save_candidate, neo.append_management_event, neo.record_fill,
+                     neo.save_account_snapshot, neo.save_risk_regime, neo.save_instrument_spec, neo.size_candidate,
+                     neo.upload_evidence):
+        register(function)
+    register(neo.reconcile_candidate, read_only=True)
+    register(neo.read_evidence, read_only=True)
 
     @server.resource("journal://schema", mime_type="application/json")
     async def schema_resource() -> str:
@@ -173,6 +192,15 @@ def create_server() -> MCPServer:
             return FileResponse(path, filename=path.name)
         except ValueError:
             return JSONResponse({"error": "Export not found"}, status_code=404)
+
+    @server.custom_route("/evidence/{evidence_id:int}", methods=["GET"])
+    async def download_evidence(request):
+        try:
+            metadata, content = await anyio.to_thread.run_sync(
+                functools.partial(neo.authorized_evidence, request.path_params["evidence_id"], request.query_params.get("token")), limiter=limiter)
+            return Response(content, media_type=metadata["mime_type"], headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'"})
+        except ValueError:
+            return JSONResponse({"error": "Evidence unavailable or access expired"}, status_code=404)
     return server
 
 

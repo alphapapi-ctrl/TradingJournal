@@ -60,8 +60,8 @@ def show():
 
     st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
-    tab_overview, tab_daily, tab_weekly, tab_trade, tab_pretrade, tab_templates = st.tabs([
-        "🗓️ Overview", "📅 Daily", "📆 Weekly", "📊 Trade Notes", "📋 Pre-Trade Plan", "🗂️ Templates"
+    tab_overview, tab_daily, tab_weekly, tab_trade, tab_pretrade, tab_templates, tab_evidence = st.tabs([
+        "🗓️ Overview", "📅 Daily", "📆 Weekly", "📊 Trade Notes", "📋 Pre-Trade Plan", "🗂️ Templates", "📷 Evidence & Neo"
     ])
 
     # Switch to requested tab if a button set one
@@ -74,6 +74,9 @@ def show():
     with tab_trade:     _trade_journal(account_id)
     with tab_pretrade:  _pretrade_journal(account_id)
     with tab_templates: _template_manager()
+    with tab_evidence:
+        from utils.neo_ui import show as show_neo
+        show_neo(account_id)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
