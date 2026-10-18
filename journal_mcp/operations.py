@@ -58,7 +58,7 @@ def export_records(entity: str, filters: dict | None = None, start_date: str | N
         buffer = io.StringIO(newline="")
         writer = csv.DictWriter(buffer, fieldnames=list(records.columns(entity)))
         writer.writeheader()
-        writer.writerows(result["records"])
+        writer.writerows({key: json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value for key, value in row.items()} for row in result["records"])
         content = buffer.getvalue()
     return {**_write_export(content, format, entity), "exported": len(result["records"]),
             "total": result["total"], "next_offset": result["next_offset"]}

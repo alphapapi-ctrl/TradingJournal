@@ -59,6 +59,12 @@ IMMUTABLE = set(TABLES) - {"trading_sessions", "candidates"}
 
 
 def migrate(conn):
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _migrate(conn)
+
+
+def _migrate(conn):
     for name, fields in TABLES.items():
         conn.execute(f"CREATE TABLE IF NOT EXISTS {name} (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (datetime('now')), {fields})")
     conn.execute("CREATE TABLE IF NOT EXISTS evidence_blobs (evidence_id INTEGER PRIMARY KEY, content BLOB NOT NULL)")
@@ -79,6 +85,8 @@ def migrate(conn):
         for field, definition in fields.items():
             if field not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {field} {definition}")
+    from journal_mcp.pattern_schema import migrate as migrate_patterns
+    migrate_patterns(conn)
     for table in mutable:
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS neo_revision_{table} AFTER UPDATE ON {table}
             WHEN NEW.revision=OLD.revision BEGIN UPDATE {table} SET revision=OLD.revision+1 WHERE id=NEW.id; END""")
@@ -108,4 +116,3 @@ def migrate(conn):
         condition = " OR ".join(f"EXISTS(SELECT 1 FROM {child} WHERE {field}=OLD.id)" for child, field in references)
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS neo_retain_{parent} BEFORE DELETE ON {parent}
             WHEN {condition} BEGIN SELECT RAISE(ABORT, 'Record has durable Neo history and cannot be deleted'); END""")
-    conn.commit()

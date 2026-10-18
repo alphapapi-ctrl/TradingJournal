@@ -18,10 +18,11 @@ import anyio
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations, CallToolResult, TextContent
 from starlette.responses import FileResponse, JSONResponse, Response
 
-from journal_mcp import operations, records, reporting, neo
+from journal_mcp import operations, records, reporting, neo, patterns
+from journal_mcp.pattern_models import SCHEMA_VERSION
 
 
 def isolated_call(operation: str, arguments: dict) -> dict:
@@ -61,7 +62,7 @@ def clean_json(value: Any) -> Any:
 
 def create_server() -> MCPServer:
     server = MCPServer(
-        "Trading Journal", version="1.0.0", log_level="WARNING",
+        "Trading Journal", version=SCHEMA_VERSION, log_level="WARNING",
         instructions=(
             "Full access to a personal trading journal. Start with journal_schema and list_records(accounts). "
             "Use existing account IDs and patch only the fields requested. Page through results with next_offset. "
@@ -105,8 +106,13 @@ def create_server() -> MCPServer:
         "save_risk_regime": "Append explicit per-account demo/live/prop policy. data {account_id,mode,risk_pct,source,effective_at,max_trade_risk?,max_combined_risk?,max_daily_loss?,notes?}. Cash limits use account currency. Demo never inherits into live/prop; prop requires all limits. No defaults are silently activated.",
         "save_instrument_spec": "Append verified exact-contract instrument economics. data {symbol,version,quote_currency,contract_multiplier,point_value,tick_size,tick_value,quantity_step,min_quantity,source,verified_at}. point_value already includes contract multiplier; tick_value = point_value × tick_size. No assumed MNQ economics.",
         "size_candidate": "Persist sizing as a plan revision using current-balance snapshot, explicit regime and verified instrument. Requires expected_revision and offset observed_at. FX is account units per quote unit with source/time when currencies differ. Optional costs_per_contract are account-currency round-trip allowance. Existing open risk/daily loss required for configured limits. Override is per-trade with reason. Quantity rounds down and never up to minimum. No orders.",
-        "upload_evidence": "Upload actual PNG/JPEG/WebP base64 bytes (max 8 MiB) with data {journal_entry_id,filename,mime_type,stage:pre/management/post,captured_at,symbol,timeframe,source,candidate_id?,trade_id?,chart_context?}. Validates image and hash, stores bytes in database. Never treats a path as an upload. List through list_records(evidence); use read_evidence for bytes/download capability.",
+        "upload_evidence": "Upload actual PNG/JPEG/WebP base64 bytes (max 8 MiB) with data {journal_entry_id? OR pattern_entry_id?,filename,mime_type,stage:pre/management/post,captured_at,symbol,timeframe,source,candidate_id?,trade_id?,chart_context?}. At least one consistent owner required; pattern ownership needs no dummy journal entry. Retains validation/hash/database bytes and atomically links pattern-owned evidence. Never treats a path as upload. List evidence/read_evidence for retrieval.",
         "read_evidence": "Read stored image in base64 chunks (max 256 KiB), with metadata/hash and a one-hour bearer download_path on this MCP host. Follow next_offset. Missing/expired tokens deny HTTP access; MCP itself retains the service's private-LAN access model.",
+        "save_psychology_pattern": "Create or patch a reusable psychology pattern definition using typed data. A stable idempotency_key is required; updates require expected_revision. Labels and practice responses may change; keys remain stable. User-confirmed tags only. Archive retains auditable history. No account/risk/trading rule changes.",
+        "save_pattern_entry": "Save a typed pattern occurrence; partial no-trade drafts allowed. Creation needs entry_key, explicit account_id, event_date, IANA timezone and one substantive observation. Optional existing context/evidence links are account-validated atomically. Arrays/objects replace; null clears nullable fields. Behaviour defaults unknown. Updates need expected_revision, all writes idempotency_key. Read-back includes links, history and follow-ups. No inferred emotions, numeric ratings, clean-day/progression logic or orders.",
+        "append_pattern_followup": "Append a typed note/result/practice/correction to one occurrence, with stable idempotency_key. Optional parent_update changes workflow/follow-up status/intention atomically and requires expected_revision. A later occurrence uses save_pattern_entry. Original follow-ups are immutable; corrects_followup_id links a correction. Unknown event time stays null. No risk or session-review changes.",
+        "generate_pattern_report": "Read-only deterministic psychology report for explicit account_ids and inclusive dates. Default event_date; session_exchange_date excludes entries lacking linked date context. Filters include pending follow_up_status and confirmed tags (all requested tags match). Rates use logged occurrences only, with numerator/denominator/exclusions and null at zero denominator. Aggregates cover all matches; entries/queue/examples paginate by limit/offset. Tag groups overlap but overall events/trades do not multiply. Examples need include_examples=true. No causal, P&L or progression inference.",
+        "migrate_pattern_entries": "Explicit additive migration of confirmed legacy pattern journal entries. selection uses source_ids/template_ids and/or namespace=true plus confirmed timezone; template IDs never hard-coded. dry_run defaults true and writes nothing. Commit needs idempotency_key; source-ID mappings prevent duplicates. Sources remain; source-revision changes become reconciliation items. Unmapped reflection/metadata retained verbatim with review flag. No automatic emotion/definition grouping or live history testing.",
     }
 
     def register(function, name=None, read_only=False, destructive=False):
@@ -119,7 +125,13 @@ def create_server() -> MCPServer:
                 work = functools.partial(isolated_call, function.__name__, kwargs) if heavy else functools.partial(function, **kwargs)
                 result = await anyio.to_thread.run_sync(work, limiter=limiter)
                 return clean_json(result)
+            except patterns.PatternError as exc:
+                payload = {"error": exc.payload, "schema_version": SCHEMA_VERSION}
+                return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps(payload))], structuredContent=payload)
             except (ValueError, TypeError, KeyError) as exc:
+                if function.__module__ == patterns.__name__:
+                    payload = {"error": {"code": "validation_failure", "message": str(exc)}, "schema_version": SCHEMA_VERSION}
+                    return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps(payload))], structuredContent=payload)
                 raise ToolError(str(exc)) from exc
             except sqlite3.IntegrityError as exc:
                 raise ToolError(str(exc)) from exc
@@ -163,6 +175,11 @@ def create_server() -> MCPServer:
         register(function)
     register(neo.reconcile_candidate, read_only=True)
     register(neo.read_evidence, read_only=True)
+    register(patterns.save_psychology_pattern)
+    register(patterns.save_pattern_entry)
+    register(patterns.append_pattern_followup)
+    register(patterns.generate_pattern_report, read_only=True)
+    register(patterns.migrate_pattern_entries)
 
     @server.resource("journal://schema", mime_type="application/json")
     async def schema_resource() -> str:
@@ -181,7 +198,7 @@ def create_server() -> MCPServer:
     @server.custom_route("/health", methods=["GET"])
     async def health(request):
         import database
-        return JSONResponse({"status": "ok", "service": "trading-journal-mcp", "version": "1.0.0", "authentication": False,
+        return JSONResponse({"status": "ok", "service": "trading-journal-mcp", "version": SCHEMA_VERSION, "schema_version": SCHEMA_VERSION, "authentication": False,
                              "pid": os.getpid(), "hostname": socket.gethostname(),
                              "database": str(Path(database.DB_PATH).resolve()), "app_root": str(Path(__file__).resolve().parents[1])})
 

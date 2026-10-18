@@ -98,7 +98,7 @@ def generate_report(kind: str = "all", account_id: int | None = None, start_date
         # Select only review metadata: never load journal prose into a report.
         reviews = db.fetch_all(
             "SELECT id,trade_id,position_id,stage,grade,mood,trade_category FROM journal_entries "
-            "WHERE entry_type='trade' ORDER BY updated_at,id") if kind != "performance" and kind != "open_positions" else []
+            "WHERE entry_type='trade' AND NOT EXISTS(SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=journal_entries.id) ORDER BY updated_at,id") if kind != "performance" and kind != "open_positions" else []
         lookup = {}
         for review in reviews:
             if review.get("trade_id"):

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import database as db
 from journal_mcp import guards, records as r
 from utils import playbook_logic
+from journal_mcp.pattern_models import EvidenceData
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -26,13 +27,16 @@ def write(function):
     def call(*args, **kwargs):
         bound = inspect.signature(function).bind(*args, **kwargs)
         bound.apply_defaults()
+        for key, value in list(bound.arguments.items()):
+            if hasattr(value, "model_dump"):
+                bound.arguments[key] = value.model_dump(exclude_unset=True)
         arguments = dict(bound.arguments)
         key = arguments.pop("idempotency_key", None)
         with db.transaction():
             fingerprint, cached = guards.replay(key, function.__name__, arguments)
             if cached is not None:
                 return cached
-            response = function(*args, **kwargs)
+            response = function(**bound.arguments)
             return guards.remember(key, fingerprint, response)
     return call
 
@@ -711,11 +715,28 @@ def authorized_evidence(evidence_id, token):
 
 
 @write
-def upload_evidence(content_base64: str, data: dict, idempotency_key: str | None = None) -> dict:
+def upload_evidence(content_base64: str, data: EvidenceData, idempotency_key: str | None = None) -> dict:
     """Upload screenshot bytes, never a local path. Stores the bytes in the database backup."""
-    required = {"journal_entry_id", "filename", "mime_type", "stage", "captured_at", "symbol", "timeframe", "source"}
-    fields(data, required | {"candidate_id", "trade_id", "chart_context"}, required)
-    entry, candidate_id = linked_context(data["journal_entry_id"], data.get("candidate_id"), data.get("trade_id"))
+    required = {"filename", "mime_type", "stage", "captured_at", "symbol", "timeframe", "source"}
+    fields(data, required | {"journal_entry_id", "pattern_entry_id", "candidate_id", "trade_id", "chart_context"}, required)
+    if not data.get("journal_entry_id") and not data.get("pattern_entry_id"):
+        raise ValueError("journal_entry_id or pattern_entry_id is required")
+    pattern = None
+    if data.get("pattern_entry_id"):
+        from journal_mcp import patterns
+        pattern = patterns.get("pattern_entries", data["pattern_entry_id"])
+        patterns.validate_context(pattern, pattern["id"])
+        if pattern.get("symbol") and pattern["symbol"] != data["symbol"]:
+            raise patterns.PatternError("account_mismatch", "Evidence symbol differs from pattern context")
+        for key in ("candidate_id", "trade_id"):
+            if data.get(key) and (data[key] != pattern.get(key) if key == "candidate_id" else data[key] not in pattern["trade_ids"]):
+                raise patterns.PatternError("account_mismatch", "Evidence candidate/trade differs from pattern context")
+    if data.get("journal_entry_id"):
+        entry, candidate_id = linked_context(data["journal_entry_id"], data.get("candidate_id"), data.get("trade_id"))
+        if pattern:
+            patterns.validate_context({**pattern, "context_journal_entry_id": entry["id"]}, pattern["id"])
+    else:
+        entry, candidate_id = None, data.get("candidate_id")
     if data["stage"] not in {"pre", "management", "post"}:
         raise ValueError("stage must be pre, management or post")
     timestamp(data["captured_at"])
@@ -747,13 +768,15 @@ def upload_evidence(content_base64: str, data: dict, idempotency_key: str | None
         if data["symbol"] != candidate["symbol"]:
             raise ValueError("Evidence symbol must match the candidate's exact chart/contract")
     values = {**data, "candidate_id": candidate_id, "sha256": hashlib.sha256(content).hexdigest(), "byte_size": len(content)}
-    existing = db.fetch_one("SELECT * FROM evidence WHERE journal_entry_id=? AND sha256=? AND stage=? AND captured_at=?", (entry["id"], values["sha256"], data["stage"], data["captured_at"]))
+    existing = db.fetch_one("SELECT * FROM evidence WHERE journal_entry_id IS ? AND pattern_entry_id IS ? AND sha256=? AND stage=? AND captured_at=?", (entry["id"] if entry else None, data.get("pattern_entry_id"), values["sha256"], data["stage"], data["captured_at"]))
     if existing:
         if any(existing.get(key) != value for key, value in values.items()):
             raise ValueError("This capture already exists with different metadata")
         return {"evidence": existing}
     evidence_id = insert("evidence", values)
     db.execute("INSERT INTO evidence_blobs VALUES (?,?)", (evidence_id, content))
+    if pattern:
+        patterns.attach_evidence(pattern["id"], evidence_id)
     return {"evidence": r.get_record("evidence", evidence_id)}
 
 

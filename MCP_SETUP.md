@@ -193,7 +193,7 @@ for client configuration and restart behaviour.
 
 ## What the AI can do
 
-The server advertises 33 tools with descriptions and input schemas:
+The server advertises 38 tools with descriptions and input schemas (schema/capability version 1.2.0):
 
 | Capability | Tools |
 | --- | --- |
@@ -213,6 +213,12 @@ The server advertises 33 tools with descriptions and input schemas:
 | Immutable management decisions and confirmed fills | `append_management_event`, `record_fill`, `reconcile_candidate` |
 | Balance/equity snapshots, explicit account risk regimes, verified instrument economics | `save_account_snapshot`, `save_risk_regime`, `save_instrument_spec`, `size_candidate` |
 | Durable screenshot upload, retrieval and temporary download access | `upload_evidence`, `read_evidence` |
+| Native psychology definitions, occurrences and follow-ups | `save_psychology_pattern`, `save_pattern_entry`, `append_pattern_followup` |
+| Account-scoped pattern reports and explicit legacy migration | `generate_pattern_report`, `migrate_pattern_entries` |
+
+See [PATTERN_MCP.md](PATTERN_MCP.md) for typed contracts, audit/conflict behaviour,
+pending-work retrieval, direct pattern screenshot ownership and migration dry runs.
+Journal → **Psychology Patterns** displays reflections, follow-ups and reports.
 
 See [NEO_MCP.md](NEO_MCP.md) for the full Neo workflow, input fields, scoring
 examples and remaining real-account integration checks. Journal → **Evidence &

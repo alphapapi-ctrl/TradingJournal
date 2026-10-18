@@ -14,7 +14,7 @@ FILES = (
     "scripts/setup_mcp_task.ps1", "scripts/run_mcp_scheduled.py", "scripts/mcp_config.py",
     "utils/mcp_config.py", "utils/mcp_control.py", "utils/mcp_settings_ui.py", "pages/settings.py",
     "utils/runtime_checks.py",
-    "utils/neo_ui.py", "pages/journal.py", "NEO_MCP.md",
+    "utils/neo_ui.py", "utils/pattern_ui.py", "pages/journal.py", "NEO_MCP.md", "PATTERN_MCP.md",
 )
 
 

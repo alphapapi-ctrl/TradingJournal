@@ -1,5 +1,9 @@
 # Neo journal workflow
 
+Native psychology-pattern records and reports are now available alongside this
+workflow. See [PATTERN_MCP.md](PATTERN_MCP.md) for schema version 1.2.0, dedicated
+tools, pending-work retrieval and explicit migration from legacy reflections.
+
 Implemented from the requirements reviewed on 18 October 2026. These tools record
 plans, observations and confirmed executions; they do not place broker orders.
 Existing accounts, journal entries, imports and boolean playbook calls continue

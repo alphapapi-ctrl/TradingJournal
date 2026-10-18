@@ -292,8 +292,10 @@ def init_db():
     conn.commit()
     _run_migrations(conn)
     from journal_mcp.neo_schema import migrate
-    migrate(conn)
-    conn.close()
+    try:
+        migrate(conn)
+    finally:
+        conn.close()
     _seed_default_templates()
 
 

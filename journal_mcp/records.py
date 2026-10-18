@@ -11,13 +11,15 @@ from utils import trade_ops as trades
 from utils import playbook_logic as playbooks
 from journal_mcp import guards
 from journal_mcp.neo_schema import TABLES
+from journal_mcp.pattern_schema import TABLES as PATTERN_TABLES
+from journal_mcp.pattern_models import SCHEMA_VERSION
 
 ENTITIES = (
     "accounts", "trades", "positions", "journal_entries", "journal_templates",
     "playbooks", "playbook_rules", "playbook_risk_rules", "risk_setups",
-    "replay_sessions", "import_history", "day_features", *TABLES,
+    "replay_sessions", "import_history", "day_features", *TABLES, *PATTERN_TABLES,
 )
-READ_ONLY = {"import_history", "day_features", *TABLES}
+READ_ONLY = {"import_history", "day_features", *TABLES, *PATTERN_TABLES}
 JSON_FIELDS = {"raw_data", "playbook_rules_met", "custom_fields", "pending_orders", "sizing_assumptions"}
 REFERENCES = {
     "account_id": "accounts", "trade_id": "trades", "position_id": "positions",
@@ -84,7 +86,11 @@ def schema(entity: str | None = None) -> dict:
                              **({"enum": sorted(field_enum(name, key))} if field_enum(name, key) else {})}
                        for key, col in fields.items()},
         }
-    return {"entities": result, "notes": [
+    from journal_mcp.patterns import schema_contracts
+    for name, contract in schema_contracts().items():
+        if name in result:
+            result[name]["contract"] = contract
+    return {"schema_version": SCHEMA_VERSION, "capabilities": {"native_patterns": True, "pattern_reports": True, "pattern_evidence_owner": True, "legacy_pattern_migration": True}, "entities": result, "notes": [
         "IDs refer to this journal database; inspect existing accounts before creating trades.",
         "Use trade_action for close/partial_close/reopen and position_action to merge/unmerge trades.",
         "Use assign_playbook to store rule checks and calculated risk scores.",
@@ -109,6 +115,9 @@ def get_record(entity: str, record_id: int) -> dict:
 
 
 def details(entity: str, record_id: int) -> dict:
+    if entity in PATTERN_TABLES:
+        from journal_mcp.patterns import details as pattern_details
+        return pattern_details(entity, record_id)
     row = get_record(entity, record_id)
     if entity == "positions":
         row["trades"] = db.fetch_all("SELECT * FROM trades WHERE position_id=? ORDER BY id", (record_id,))
@@ -156,6 +165,9 @@ def where_clause(entity: str, filters: dict | None = None, start_date: str | Non
 def list_records(entity: str, filters: dict | None = None, start_date: str | None = None,
                  end_date: str | None = None, search: str | None = None,
                  limit: int = 100, offset: int = 0) -> dict:
+    if entity in PATTERN_TABLES:
+        from journal_mcp.patterns import list_records as pattern_list
+        return pattern_list(entity, filters, start_date, end_date, search, limit, offset)
     if not 1 <= limit <= 500 or offset < 0:
         raise ValueError("limit must be 1–500 and offset must be nonnegative")
     where, params = where_clause(entity, filters, start_date, end_date, search)
@@ -329,6 +341,9 @@ def save_record(entity: str, data: dict, record_id: int | None = None,
 
 
 def _save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
+    if entity in PATTERN_TABLES:
+        from journal_mcp.patterns import PatternError
+        raise PatternError("validation_failure", "Use dedicated pattern save/follow-up tools to preserve audit and relationship validation")
     if entity in READ_ONLY or (entity == "positions" and record_id is None):
         raise ValueError("This entity is generated; use import_trades, reference_data, or position_action")
     with db.transaction():
@@ -379,6 +394,9 @@ def _save_record(entity: str, data: dict, record_id: int | None = None) -> dict:
 
 
 def delete_record(entity: str, record_id: int) -> dict:
+    if entity in PATTERN_TABLES:
+        from journal_mcp.patterns import PatternError
+        raise PatternError("validation_failure", "Pattern history is retained; archive definitions/occurrences instead of deleting")
     if entity in READ_ONLY:
         raise ValueError("Generated records cannot be deleted with this tool")
     with db.transaction():

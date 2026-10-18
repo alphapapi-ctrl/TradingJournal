@@ -278,7 +278,7 @@ def set_position_playbook(position_id: int, playbook_id: int | None):
 # ─── JOURNAL ─────────────────────────────────────────────────────────────────
 
 def get_journal_entries(entry_type=None, start_date=None, end_date=None):
-    where = []
+    where = ["NOT EXISTS(SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=journal_entries.id)"]
     params = []
     if entry_type:
         where.append("entry_type=?")

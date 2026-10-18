@@ -90,6 +90,12 @@ sizing. Use **Journal → Evidence & Neo** to review captures and decisions.
 See [NEO_MCP.md](NEO_MCP.md) for the workflow and input contracts. Existing records
 are preserved through an additive startup migration.
 
+Native psychology patterns separate reusable definitions, occurrences and
+follow-ups, with auditable edits, account-scoped recurrence/response reports,
+direct screenshot links and explicit legacy migration. Use **Journal → Psychology
+Patterns**. See [PATTERN_MCP.md](PATTERN_MCP.md); progression and clean-day policies
+remain outside this feature.
+
 ## Playbook Logic
 
 Rules have three types:

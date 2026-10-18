@@ -60,8 +60,8 @@ def show():
 
     st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
-    tab_overview, tab_daily, tab_weekly, tab_trade, tab_pretrade, tab_templates, tab_evidence = st.tabs([
-        "🗓️ Overview", "📅 Daily", "📆 Weekly", "📊 Trade Notes", "📋 Pre-Trade Plan", "🗂️ Templates", "📷 Evidence & Neo"
+    tab_overview, tab_daily, tab_weekly, tab_trade, tab_pretrade, tab_templates, tab_evidence, tab_patterns = st.tabs([
+        "🗓️ Overview", "📅 Daily", "📆 Weekly", "📊 Trade Notes", "📋 Pre-Trade Plan", "🗂️ Templates", "📷 Evidence & Neo", "Psychology Patterns"
     ])
 
     # Switch to requested tab if a button set one
@@ -77,6 +77,9 @@ def show():
     with tab_evidence:
         from utils.neo_ui import show as show_neo
         show_neo(account_id)
+    with tab_patterns:
+        from utils.pattern_ui import show as show_patterns
+        show_patterns(account_id)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -97,7 +100,7 @@ def _js_switch_tab(index: int):
 
 
 def _get_entry(entry_type, entry_date, trade_id=None, stage=None):
-    where = "entry_type=? AND entry_date=?"
+    where = "entry_type=? AND entry_date=? AND NOT EXISTS(SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=journal_entries.id)"
     params = [entry_type, str(entry_date)]
     if trade_id:
         where += " AND trade_id=?"
@@ -184,6 +187,7 @@ def _calendar_overview(account_id=None):
         """SELECT id, entry_type, entry_date, trade_id, stage, grade
            FROM journal_entries
            WHERE entry_date BETWEEN ? AND ?
+           AND NOT EXISTS(SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=journal_entries.id)
            ORDER BY entry_date""",
         [str(month_start), str(month_end)],
     )
