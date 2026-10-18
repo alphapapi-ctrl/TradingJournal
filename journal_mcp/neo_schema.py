@@ -45,8 +45,9 @@ TABLES = {
     "instrument_specs": """
         symbol TEXT NOT NULL, version TEXT NOT NULL, quote_currency TEXT NOT NULL,
         contract_multiplier REAL NOT NULL, point_value REAL NOT NULL,
-        tick_size REAL NOT NULL, tick_value REAL NOT NULL,
+        tick_size REAL, tick_value REAL,
         quantity_step REAL NOT NULL, min_quantity REAL NOT NULL,
+        max_quantity REAL, sizing_method TEXT NOT NULL DEFAULT 'point_value',
         source TEXT NOT NULL, verified_at TEXT NOT NULL, UNIQUE(symbol,version)""",
     "evidence": """
         journal_entry_id INTEGER NOT NULL, candidate_id INTEGER, trade_id INTEGER,
@@ -67,6 +68,15 @@ def migrate(conn):
 def _migrate(conn):
     for name, fields in TABLES.items():
         conn.execute(f"CREATE TABLE IF NOT EXISTS {name} (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (datetime('now')), {fields})")
+    # Rebuild only the old NOT NULL tick schema, inside the enclosing transaction.
+    # IDs, timestamps, immutable history and all existing contract values survive.
+    spec_columns = list(conn.execute('PRAGMA table_info(instrument_specs)'))
+    if any(row[1] in ('tick_size', 'tick_value') and row[3] for row in spec_columns):
+        conn.execute(f"CREATE TABLE neo_instrument_specs_upgrade (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (datetime('now')), {TABLES['instrument_specs']})")
+        names = ','.join(row[1] for row in spec_columns)
+        conn.execute(f"INSERT INTO neo_instrument_specs_upgrade ({names}) SELECT {names} FROM instrument_specs")
+        conn.execute('DROP TABLE instrument_specs')
+        conn.execute('ALTER TABLE neo_instrument_specs_upgrade RENAME TO instrument_specs')
     conn.execute("CREATE TABLE IF NOT EXISTS evidence_blobs (evidence_id INTEGER PRIMARY KEY, content BLOB NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS evidence_access (token_hash TEXT PRIMARY KEY, evidence_id INTEGER NOT NULL, expires_at REAL NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS mcp_requests (request_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL)")
@@ -75,6 +85,8 @@ def _migrate(conn):
         "trades": {"instrument_spec_id": "INTEGER", "sizing_assumptions": "TEXT", "baseline_version": "TEXT", "playbook_version": "TEXT", "template_id": "INTEGER", "template_version": "TEXT"},
         "journal_templates": {"version": "TEXT DEFAULT '1'"},
         "playbooks": {"version": "TEXT DEFAULT '1'"},
+        "instrument_specs": {"max_quantity": "REAL", "sizing_method": "TEXT NOT NULL DEFAULT 'point_value'"},
+        "risk_setups": {"instrument_key": "TEXT NOT NULL DEFAULT 'stocks'", "costs_per_unit": "REAL NOT NULL DEFAULT 0"},
     }
     mutable = ("accounts", "trades", "positions", "journal_entries", "journal_templates", "playbooks", "playbook_rules", "playbook_risk_rules", "risk_setups", "replay_sessions", "trading_sessions", "candidates")
     for table in mutable:

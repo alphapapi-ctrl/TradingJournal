@@ -14,8 +14,10 @@ live open P&L (including dividends) and process-compliance reporting.
 - **Stock Analysis** — technicals (EMA 21/50, SMA 200, RSI, OBV, volume-spike/capitulation
   scan, weekly demand zones) with a generalised fundamental checks framework and ETF-aware
   filtering
-- **Risk Calculator** — stocks-first position sizing with live prices, creates linked
-  pre-trade journal entries; Kelly criterion from your measured edge
+- **Risk Calculator** — select normal stocks or IC Markets Gold/US500 CFDs; size
+  shares or lots from cash risk, with saved setups and pre-trade plans. CFD sizing
+  uses contract size and lot steps without tick values. See [CFD sizing](CFD_SIZING.md).
+  Kelly criterion remains available from your measured edge.
 - **Add Trade** — auto-detected imports: TradingView paper CSV, IBKR Activity Statement,
   CMC Markets, MT5 HTML/CSV, IC Markets; manual entry with account assignment
 - **Trades / Trade Detail** — merge trades into positions (with playbook propagation),

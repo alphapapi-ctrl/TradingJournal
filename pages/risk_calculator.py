@@ -1,5 +1,5 @@
 """
-Page: Risk Calculator — stocks-first position sizing + Kelly criterion
+Page: Risk Calculator — stock/share and IC Markets CFD/lot sizing + Kelly criterion
 """
 import streamlit as st
 import numpy as np
@@ -34,232 +34,199 @@ def show(embedded=False):
 
 # ── Position Sizer (stocks-first) ─────────────────────────────────────────────
 
-def _position_sizer():
-    st.subheader("Position Size Calculator")
-    settings = _get_settings()
+def _reset_sizing_instrument():
+    from utils.position_sizing import IC_MARKETS_CONTRACTS
+    contract = IC_MARKETS_CONTRACTS[st.session_state.get("rc_cfd_contract", "ic_gold")]
+    st.session_state["rc_ticker"] = contract["symbol"] if st.session_state["rc_asset_type"] == "CFD" else ""
+    st.session_state["rc_entry"] = 0.0
+    st.session_state["rc_stop"] = 0.0
+    st.session_state["rc_costs"] = 0.0
+    st.session_state.pop("rc_live_price", None)
+    st.session_state.pop("rc_live_sym", None)
 
+
+def _reset_sizing_account():
+    st.session_state["rc_balance"] = 0.0
+
+
+def _change_sizing_type():
+    _reset_sizing_instrument()
+    _reset_sizing_account()
+
+
+def _position_sizer():
+    from utils.position_sizing import IC_MARKETS_CONTRACTS, size_cash_risk
     from utils.accounts import get_accounts
     accounts = get_accounts()
+    settings = _get_settings()
+    st.subheader("Position Size Calculator")
+    defaults = {"rc_ticker": "", "rc_entry": 10.0, "rc_stop": 9.5,
+        "rc_dir": "LONG", "rc_risk": float(settings.get("risk_pct", 1.0)),
+        "rc_account": 0, "rc_asset_type": "Normal stock", "rc_cfd_contract": "ic_gold", "rc_costs": 0.0}
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
 
-    # ── Saved setups — load one back to revisit later ─────────────────────────
-    saved = fetch_all("SELECT * FROM risk_setups ORDER BY created_at DESC LIMIT 50")
+    saved = fetch_all("SELECT * FROM risk_setups ORDER BY created_at DESC, id DESC LIMIT 50")
     if saved:
         with st.expander(f"📂 Saved setups ({len(saved)})"):
             def setup_label(sid):
-                s = next(x for x in saved if x["id"] == sid)
-                note = f"  · {s['note'][:30]}" if s.get("note") else ""
-                return (f"{(s['created_at'] or '')[:10]}  {s['ticker']} {s['direction']}  "
-                        f"{s['shares']:g} @ {s['entry_price']:.4f}  (stop {s['stop_price']:.4f}, "
-                        f"{s['risk_pct']:.1f}%){note}")
-            sel_id = st.selectbox("Setup", [s["id"] for s in saved],
-                                  format_func=setup_label, key="rc_saved_sel")
-            cl, cd, _ = st.columns([1, 1, 3])
-            if cl.button("📥 Load", key="rc_load_btn", use_container_width=True):
-                s = next(x for x in saved if x["id"] == sel_id)
-                # Write straight into widget state — survives any later rerun
-                st.session_state["rc_ticker"] = s["ticker"] or ""
-                st.session_state["rc_entry"]  = float(s["entry_price"] or 0)
-                st.session_state["rc_stop"]   = float(s["stop_price"] or 0)
-                st.session_state["rc_dir"]    = s["direction"] or "LONG"
-                st.session_state["rc_risk"]   = float(s["risk_pct"] or 1.0)
-                st.session_state["rc_balance"] = float(s["balance"] or 10000.0)
-                if s.get("account_id") and accounts:
-                    st.session_state["rc_account"] = next(
-                        (i for i, a in enumerate(accounts) if a["id"] == s["account_id"]), 0)
+                item = next(s for s in saved if s["id"] == sid)
+                unit = "lots" if item.get("instrument_key", "stocks") in IC_MARKETS_CONTRACTS else "shares"
+                return f"{(item['created_at'] or '')[:10]}  {item['ticker']} {item['direction']}  {item['shares']:g} {unit} @ {item['entry_price']:.4f}"
+            selected = st.selectbox("Setup", [s["id"] for s in saved], format_func=setup_label, key="rc_saved_sel")
+            load, delete, _ = st.columns([1, 1, 3])
+            if load.button("📥 Load", key="rc_load_btn", use_container_width=True):
+                item = next(s for s in saved if s["id"] == selected)
+                instrument_key = item.get("instrument_key") or "stocks"
+                st.session_state["rc_asset_type"] = "CFD" if instrument_key in IC_MARKETS_CONTRACTS else "Normal stock"
+                if instrument_key in IC_MARKETS_CONTRACTS:
+                    st.session_state["rc_cfd_contract"] = instrument_key
+                for state, field in (("rc_ticker", "ticker"), ("rc_entry", "entry_price"), ("rc_stop", "stop_price"), ("rc_dir", "direction"), ("rc_risk", "risk_pct"), ("rc_balance", "balance")):
+                    st.session_state[state] = item[field]
+                st.session_state["rc_costs"] = float(item.get("costs_per_unit") or 0)
+                st.session_state["rc_account"] = next((i for i, a in enumerate(accounts) if a["id"] == item.get("account_id")), 0)
                 st.session_state.pop("rc_live_price", None)
-                st.session_state["rc_live_sym"] = s["ticker"]
+                st.session_state.pop("rc_live_sym", None)
                 st.rerun()
-            if cd.button("🗑️ Delete", key="rc_del_btn", use_container_width=True):
-                execute("DELETE FROM risk_setups WHERE id=?", (sel_id,))
+            if delete.button("🗑️ Delete", key="rc_del_btn", use_container_width=True):
+                execute("DELETE FROM risk_setups WHERE id=?", (selected,))
                 st.rerun()
 
-    # ── Initialise widget state once (all inputs are session-state driven) ───
-    init_defaults = {
-        "rc_ticker": "",
-        "rc_entry": 10.00,
-        "rc_stop": 9.50,
-        "rc_dir": "LONG",
-        "rc_risk": float(settings.get("risk_pct", 1.0)),
-        "rc_account": 0,
-    }
-    for k, v in init_defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
+    st.selectbox("Instrument type", ["Normal stock", "CFD"], key="rc_asset_type", on_change=_change_sizing_type)
+    is_cfd = st.session_state["rc_asset_type"] == "CFD"
+    contract = None
+    if is_cfd:
+        key = st.selectbox("CFD contract", list(IC_MARKETS_CONTRACTS), format_func=lambda key: IC_MARKETS_CONTRACTS[key]["label"], key="rc_cfd_contract", on_change=_reset_sizing_instrument)
+        contract = IC_MARKETS_CONTRACTS[key]
+        st.caption(f"1.00 lot = {contract['contract_size']:g} contract units · USD {contract['contract_size']:g} per full 1.00 price move per lot · minimum/step {contract['min_quantity']:g}/{contract['quantity_step']:g} lots · maximum {contract['max_quantity']:g} lots. Tick values are not needed.")
+    instrument_key = st.session_state["rc_cfd_contract"] if is_cfd else "stocks"
+    unit = "lots" if is_cfd else "shares"
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Account**")
-        acc_obj = None
+        account = None
         if accounts:
-            acc_names = [f"{a['name']}  ({a['broker']})" for a in accounts]
             if st.session_state["rc_account"] >= len(accounts):
                 st.session_state["rc_account"] = 0
-            acc_idx = st.selectbox("Account", range(len(acc_names)),
-                                   format_func=lambda i: acc_names[i], key="rc_account")
-            acc_obj = accounts[acc_idx]
-            default_bal = float(acc_obj.get("initial_balance") or 0) or 10000.0
-        else:
-            default_bal = float(settings.get("account_balance", 10000))
+            index = st.selectbox("Account", range(len(accounts)), format_func=lambda i: f"{accounts[i]['name']} ({accounts[i]['currency']})", key="rc_account", on_change=_reset_sizing_account)
+            account = accounts[index]
+        currency = (account.get("currency") if account else ("USD" if is_cfd else "AUD")) or "USD"
         if "rc_balance" not in st.session_state:
-            st.session_state["rc_balance"] = default_bal
-        account_balance = st.number_input("Balance ($)", min_value=100.0, step=100.0,
-                                          key="rc_balance")
-        risk_pct    = st.slider("Risk per trade (%)", 0.1, 5.0,
-                                 step=0.1, format="%.1f%%", key="rc_risk")
-        risk_amount = account_balance * risk_pct / 100
-        st.metric("Risk Amount ($)", f"{risk_amount:,.2f}")
+            st.session_state["rc_balance"] = 0.0
+        balance = st.number_input(f"Current balance ({currency})", min_value=0.0, step=100.0, key="rc_balance")
+        st.caption("Enter the current balance; a saved setup's balance may need updating.")
+        risk_pct = st.slider("Risk per trade (%)", 0.1, 5.0, step=0.1, format="%.1f%%", key="rc_risk")
+        budget = balance * risk_pct / 100
+        st.metric(f"Risk budget ({currency})", f"{budget:,.2f}")
+        costs = st.number_input(f"Round-trip cost allowance per {'1.00 lot' if is_cfd else 'share'} ({currency})", min_value=0.0, step=0.1, key="rc_costs")
+        if costs == 0:
+            st.caption("Sizing excludes commission, slippage and any spread allowance not already reflected in your entry/stop prices.")
 
     with col2:
         st.markdown("**Trade Setup**")
-        tc1, tc2 = st.columns([2, 1])
-        with tc1:
-            ticker = st.text_input("Ticker", placeholder="BHP.AX / AAPL / VAS.AX",
-                                   key="rc_ticker")
-        with tc2:
-            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            fetch_clicked = st.button("📡 Get price", key="rc_fetch", use_container_width=True)
-
-        if fetch_clicked and ticker.strip():
-            try:
-                from utils.stock_data import resolve_yf_symbol, fetch_history
-                yf_sym = ticker.strip().upper()
+        if is_cfd:
+            symbol = contract["symbol"]
+            st.write(f"**Broker symbol:** {symbol}")
+        else:
+            ticker_col, price_col = st.columns([2, 1])
+            ticker = ticker_col.text_input("Ticker", placeholder="BHP.AX / AAPL / VAS.AX", key="rc_ticker")
+            if price_col.button("📡 Get price", key="rc_fetch", use_container_width=True) and ticker.strip():
                 try:
-                    hist = fetch_history(yf_sym, "5d", "1d")
-                except Exception:
-                    yf_sym = yf_sym + ".AX" if "." not in yf_sym else yf_sym
-                    hist = fetch_history(yf_sym, "5d", "1d")
-                live = float(hist["Close"].iloc[-1])
-                st.session_state["rc_live_price"] = live
-                st.session_state["rc_live_sym"] = yf_sym
-                # Push the live price into the entry/stop inputs
-                st.session_state["rc_entry"] = round(live, 4)
-                st.session_state["rc_stop"]  = round(live * 0.95, 4)
-            except Exception as e:
-                st.error(f"Could not fetch price for {ticker}: {e}")
+                    from utils.stock_data import fetch_history
+                    yf_symbol = ticker.strip().upper()
+                    try:
+                        history = fetch_history(yf_symbol, "5d", "1d")
+                    except Exception:
+                        yf_symbol = yf_symbol + ".AX" if "." not in yf_symbol else yf_symbol
+                        history = fetch_history(yf_symbol, "5d", "1d")
+                    live = float(history["Close"].iloc[-1])
+                    st.session_state.update(rc_live_price=live, rc_live_sym=yf_symbol, rc_entry=round(live, 4), rc_stop=round(live * (0.95 if st.session_state["rc_dir"] == "LONG" else 1.05), 4))
+                except Exception as error:
+                    st.error(f"Could not fetch price: {error}")
+            # A fetched alias is usable only while the ticker it came from still matches.
+            live_symbol = st.session_state.get("rc_live_sym", "")
+            typed = ticker.strip().upper()
+            symbol = live_symbol if live_symbol in (typed, typed + ".AX") else typed
+            if st.session_state.get("rc_live_price") and symbol == live_symbol:
+                st.caption(f"Fetched {symbol}: {st.session_state['rc_live_price']:,.4f}; review entry and stop.")
+        entry = st.number_input("Entry Price", min_value=0.0, step=0.01, format="%.4f", key="rc_entry")
+        stop = st.number_input("Stop Loss Price", min_value=0.0, step=0.01, format="%.4f", key="rc_stop")
+        direction = st.selectbox("Direction", ["LONG", "SHORT"], key="rc_dir")
 
-        live_price = st.session_state.get("rc_live_price")
-        if live_price:
-            st.caption(f"Live: **{st.session_state.get('rc_live_sym','')} {live_price:,.2f}** "
-                       f"(entry/stop pre-filled — stop at −5%)")
-
-        entry_price = st.number_input("Entry Price", min_value=0.0, step=0.01,
-                                      format="%.4f", key="rc_entry")
-        stop_price  = st.number_input("Stop Loss Price", min_value=0.0, step=0.01,
-                                      format="%.4f", key="rc_stop")
-        direction   = st.selectbox("Direction", ["LONG", "SHORT"], key="rc_dir")
-
-    if entry_price <= 0 or stop_price <= 0 or entry_price == stop_price:
-        st.warning("Enter a valid entry and stop price.")
+    if is_cfd and currency.upper() != "USD":
+        st.warning("Select a USD account for these IC Markets contracts. Convert risk to USD before using a non-USD account.")
         return
-
-    stop_distance = abs(entry_price - stop_price)
-    shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
-    position_value = shares * entry_price
-    pos_pct = position_value / account_balance * 100 if account_balance else 0
-
+    if balance <= 0:
+        st.info("Enter a current balance to calculate position size.")
+        return
+    try:
+        result = size_cash_risk(entry, stop, budget, point_value=contract["contract_size"] if is_cfd else 1,
+            quantity_step=contract["quantity_step"] if is_cfd else 1,
+            min_quantity=contract["min_quantity"] if is_cfd else 1,
+            max_quantity=contract["max_quantity"] if is_cfd else None,
+            costs_per_unit=costs, direction=direction)
+    except ValueError as error:
+        st.warning(str(error))
+        return
+    quantity = result["quantity"]
+    quantity_text = f"{quantity:,.2f} lots" if is_cfd else f"{quantity:,.0f} shares"
+    value = result["position_value"]
+    percentage = value / balance * 100
     st.divider()
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
-    c1.metric("Position Size", f"{shares:,} shares")
-    c2.metric("Position Value", f"${position_value:,.2f}")
-    c3.metric("% of Account", f"{pos_pct:.1f}%")
-    with c4:
-        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-        if st.button("➕ Create open trade", use_container_width=True, type="primary",
-                     help="Creates the trade immediately (open, entry today) — no form needed",
-                     disabled=shares <= 0):
-            from utils.trade_ops import upsert_trade_from_broker
-            from datetime import date as _date
-            sym = (st.session_state.get("rc_live_sym") or ticker or "").strip().upper()
-            if not sym:
-                st.error("Enter a ticker first.")
-            else:
-                try:
-                    tid, _ = upsert_trade_from_broker({
-                        "broker": "Manual", "broker_trade_id": None,
-                        "symbol": sym, "direction": direction,
-                        "entry_price": float(entry_price), "exit_price": None,
-                        "entry_time": str(_date.today()), "exit_time": None,
-                        "quantity": float(shares), "pnl": 0,
-                        "commission": 0, "swap": 0, "raw_data": None,
-                        "status": "open",
-                        "account_id": acc_obj["id"] if acc_obj else None,
-                    })
-                    st.session_state["rc_trade_created"] = (
-                        f"✅ Trade #{tid} created: {sym} {direction} {shares:,} @ "
-                        f"{entry_price:.4f} — open, entry {_date.today()}. "
-                        f"See it in the Positions tab."
-                    )
-                except Exception as ex:
-                    import traceback
-                    st.error(f"Create failed: {ex}")
-                    st.code(traceback.format_exc())
+    size_col, risk_col, value_col = st.columns(3)
+    size_col.metric("Position Size", quantity_text)
+    risk_col.metric(f"Planned risk ({currency})", f"{result['actual_risk']:,.2f}")
+    value_col.metric(f"{'Notional' if is_cfd else 'Position'} value ({currency})", f"{value:,.2f}")
+    if result["below_minimum"]:
+        st.warning(f"The risk budget cannot support the minimum {'lot size' if is_cfd else 'share quantity'}. No position fits; size has not been rounded up.")
+    if result["capped_at_maximum"]:
+        st.info("Size is capped at this contract's maximum volume; part of the risk budget remains unused.")
+    if is_cfd:
+        st.caption("Notional value is exposure, not required margin. Check available broker margin separately. This calculation does not place an order or record an execution.")
+    elif percentage > 100:
+        st.warning("Position value exceeds account balance.")
 
-    if st.session_state.get("rc_trade_created"):
-        st.success(st.session_state.pop("rc_trade_created"))
-    if pos_pct > 100:
-        st.warning("Position value exceeds account balance — stop is too tight for this risk % without leverage.")
+    # Preserve the existing stock-only convenience action; a CFD sizing preview is not a fill.
+    if not is_cfd and st.button("➕ Create open trade", disabled=quantity <= 0 or not symbol, use_container_width=True):
+        from utils.trade_ops import upsert_trade_from_broker
+        from datetime import date
+        trade_id, _ = upsert_trade_from_broker({"broker": "Manual", "broker_trade_id": None,
+            "symbol": symbol, "direction": direction, "entry_price": entry, "exit_price": None,
+            "entry_time": str(date.today()), "exit_time": None, "quantity": quantity, "pnl": 0,
+            "commission": 0, "swap": 0, "raw_data": None, "status": "open",
+            "account_id": account["id"] if account else None})
+        st.success(f"Trade #{trade_id} created: {symbol} {direction} {quantity_text}.")
 
-    # ── Save setup for later (capital constraints etc.) ───────────────────────
-    sc1, sc2 = st.columns([3, 1])
-    with sc1:
-        setup_note = st.text_input("Note (optional)", key="rc_setup_note",
-                                   placeholder="e.g. waiting on capital from SPYI exit")
-    with sc2:
-        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-        if st.button("💾 Save Setup", key="rc_save_setup", use_container_width=True,
-                     disabled=not (ticker.strip() or st.session_state.get("rc_live_sym"))):
-            sym = (st.session_state.get("rc_live_sym") or ticker or "").strip().upper()
-            execute(
-                """INSERT INTO risk_setups
-                   (ticker, direction, entry_price, stop_price, risk_pct, balance,
-                    account_id, shares, note)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (sym, direction, entry_price, stop_price, risk_pct, account_balance,
-                 acc_obj["id"] if acc_obj else None, shares, setup_note.strip() or None),
-            )
-            st.success(f"Setup saved: {sym} {direction} {shares:,} @ {entry_price:.4f} — "
-                       f"load it from 📂 Saved setups any time.")
+    note = st.text_input("Note (optional)", key="rc_setup_note")
+    if st.button("💾 Save Setup", key="rc_save_setup", disabled=not symbol or quantity <= 0):
+        execute("""INSERT INTO risk_setups
+            (ticker,direction,entry_price,stop_price,risk_pct,balance,account_id,shares,note,instrument_key,costs_per_unit)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (symbol, direction, entry, stop, risk_pct, balance,
+            account["id"] if account else None, quantity, note.strip() or None, instrument_key, costs))
+        st.success(f"Setup saved: {symbol} {direction} {quantity_text}.")
 
-    # ── Create pre-trade journal entry ────────────────────────────────────────
     st.divider()
     st.markdown("**📋 Pre-Trade Plan**")
-    st.caption("Creates an unassigned pre-trade journal entry with this sizing. "
-               "Complete the plan & playbook in the Journal, then link imported trades to it to form a position.")
-
+    st.caption("Saves a plan without creating a trade. Link confirmed executions later.")
     from utils.playbook_logic import get_playbooks
-    playbooks  = get_playbooks()
-    pb_options = {"None": None} | {pb["name"]: pb["id"] for pb in playbooks}
-    pc1, pc2 = st.columns([2, 2])
-    with pc1:
-        sel_pb = st.selectbox("Playbook", list(pb_options.keys()), key="rc_playbook")
-
-    if st.button("📝 Create Pre-Trade Journal Entry", type="primary", key="rc_create_plan"):
-        from datetime import date as _date
-        sym = (st.session_state.get("rc_live_sym") or ticker or "").strip().upper() or "UNKNOWN"
-        acc_txt = f"Account: {acc_obj['name']}\n" if acc_obj else ""
-        plan_txt = (
-            f"{acc_txt}"
-            f"Ticker: {sym}\n"
-            f"Direction: {direction}\n"
-            f"Entry: {entry_price:.4f}\n"
-            f"Stop: {stop_price:.4f}  (distance {stop_distance:.4f})\n"
-            f"Size: {shares:,} shares  (~${position_value:,.2f}, {pos_pct:.1f}% of account)"
-        )
-        risk_txt = (
-            f"Risk: {risk_pct:.1f}% of ${account_balance:,.2f} = ${risk_amount:,.2f}\n"
-            f"Smart risk check: defined stop at {stop_price:.4f}, planned size {shares:,} shares"
-        )
-        execute(
-            """INSERT INTO journal_entries
-               (entry_type, entry_date, stage, playbook_id, pre_plan, pre_risk_notes, account_id)
-               VALUES ('trade', ?, 'pre', ?, ?, ?, ?)""",
-            (str(_date.today()), pb_options.get(sel_pb), plan_txt, risk_txt,
-             acc_obj["id"] if acc_obj else None),
-        )
-        st.success(
-            f"Pre-trade plan created for **{sym}** — find it in **Journal → Pre-Trade Plan** "
-            f"(or link it from Trade Notes once trades are imported)."
-        )
+    playbooks = {"None": None} | {pb["name"]: pb["id"] for pb in get_playbooks()}
+    selected_playbook = st.selectbox("Playbook", list(playbooks), key="rc_playbook")
+    if st.button("📝 Create Pre-Trade Journal Entry", type="primary", key="rc_create_plan", disabled=not symbol or quantity <= 0):
+        from datetime import date
+        import json
+        account_text = f"Account: {account['name']}\n" if account else ""
+        basis = f"CFD contract size {contract['contract_size']}; lot step {contract['quantity_step']}; no tick values required" if is_cfd else "Whole-share sizing"
+        plan = f"{account_text}Ticker: {symbol}\nDirection: {direction}\nEntry: {entry:.4f}\nStop: {stop:.4f} (distance {result['stop_distance']:g})\nSize: {quantity_text}\n{basis}\nNotional value: {currency} {value:,.2f}"
+        risk = f"{risk_pct:g}% of current balance {currency} {balance:,.2f}; budget {budget:,.2f}; planned risk {result['actual_risk']:,.2f}; round-trip cost allowance per {unit}: {costs:g}"
+        assumptions = {"position_sizing": {"instrument_key": instrument_key, "quantity": quantity,
+            "quantity_unit": unit, "contract_size": contract["contract_size"] if is_cfd else 1,
+            "costs_per_unit": costs, "risk_budget": budget, "actual_risk": result["actual_risk"],
+            "currency": currency, "source": contract["source"] if is_cfd else "User stock inputs"}}
+        execute("""INSERT INTO journal_entries
+            (entry_type,entry_date,stage,playbook_id,pre_plan,pre_risk_notes,account_id,custom_fields)
+            VALUES ('trade',?,'pre',?,?,?,?,?)""", (str(date.today()), playbooks[selected_playbook], plan, risk,
+            account["id"] if account else None, json.dumps(assumptions)))
+        st.success(f"Pre-trade plan created for {symbol}; no execution recorded.")
 
 
 # ── Kelly Criterion ───────────────────────────────────────────────────────────

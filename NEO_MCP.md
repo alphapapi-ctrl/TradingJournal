@@ -97,21 +97,29 @@ preserved separately from revisions and management history.
   `notes`. Limits are cash amounts. Prop policies require all three limits.
   Demo mode requires a Demo account. Live/prop have no inherited demo percentage.
 - Instrument spec: `symbol`, `version`, `quote_currency`, `contract_multiplier`,
-  `point_value`, `tick_size`, `tick_value`, `quantity_step`, `min_quantity`,
-  `source`, `verified_at`. Point value already includes the contract multiplier;
-  do not multiply it again. Tick value must equal point value × tick size.
+  `quantity_step`, `min_quantity`, `source`, `verified_at`, optional `max_quantity`.
+  Default `sizing_method: point_value` retains required `point_value`, `tick_size`
+  and `tick_value`. CFD `sizing_method: contract_size` derives point value directly
+  from the contract multiplier and does not require tick values. If known ticks
+  are supplied, both must be positive and tick value must equal point value ×
+  tick size. Do not multiply point value by the contract size again. See
+  [the stock/CFD calculator and contract-size mode](CFD_SIZING.md).
 
 `size_candidate` needs candidate/snapshot/regime/spec IDs, `expected_revision`
 and `observed_at`. Optional FX uses account-currency units per quote-currency
 unit and requires source/time when currencies differ. Cost allowance is an
 account-currency round-trip amount per contract. Configured combined-risk and
 daily-loss limits require explicit existing open risk/daily loss. Quantity rounds
-down to the permitted step; below minimum returns zero. A risk override requires
+down to the permitted step; below minimum returns zero and an instrument maximum
+caps quantity. Unknown tick values do not block contract-size sizing or force
+decimal entry/stop prices onto a whole-point grid. A risk override requires
 a reason, applies to that candidate only, and does not change the regime.
 
 When creating an executed trade, persist `instrument_spec_id` and
 `sizing_assumptions` (copy the candidate sizing object). The journal validates
-tick/quantity increments and retains account currency, point value and FX basis.
+known tick increments and quantity minimum/step/maximum, and retains account
+currency, point value and FX basis. Tick validation is omitted for contract-size
+specs with unknown ticks; monetary P&L still uses the saved contract/FX basis.
 Full and partial close calculations use those economics. A verified broker P&L
 override remains supported. Legacy trades without a spec retain their prior
 price × quantity behaviour; no MNQ specification is guessed for them. Broker

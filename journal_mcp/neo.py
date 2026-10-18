@@ -11,13 +11,13 @@ import math
 import secrets
 import time
 from datetime import date, datetime
-from decimal import Decimal, ROUND_FLOOR
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import database as db
 from journal_mcp import guards, records as r
 from utils import playbook_logic
 from journal_mcp.pattern_models import EvidenceData
+from utils.position_sizing import size_cash_risk
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -301,16 +301,36 @@ def save_risk_regime(data: dict, idempotency_key: str | None = None) -> dict:
 
 @write
 def save_instrument_spec(data: dict, idempotency_key: str | None = None) -> dict:
-    required = {"symbol", "version", "quote_currency", "contract_multiplier", "point_value", "tick_size", "tick_value", "quantity_step", "min_quantity", "source", "verified_at"}
-    fields(data, required, required)
-    for key in ("contract_multiplier", "point_value", "tick_size", "tick_value", "quantity_step", "min_quantity"):
+    data = dict(data)
+    required = {"symbol", "version", "quote_currency", "contract_multiplier", "quantity_step", "min_quantity", "source", "verified_at"}
+    fields(data, required | {"point_value", "tick_size", "tick_value", "max_quantity", "sizing_method"}, required)
+    method = data.setdefault("sizing_method", "point_value")
+    if method not in ("point_value", "contract_size"):
+        raise ValueError("sizing_method must be point_value or contract_size")
+    if method == "contract_size":
+        if data.get("point_value") is not None and data["point_value"] != data["contract_multiplier"]:
+            raise ValueError("CFD point_value must equal contract_multiplier; do not multiply twice")
+        data["point_value"] = data["contract_multiplier"]
+    else:
+        fields(data, set(data), {"point_value", "tick_size", "tick_value"})
+    for key in ("contract_multiplier", "point_value", "quantity_step", "min_quantity"):
         number(data[key], key, positive=True)
     for key in ("symbol", "version", "quote_currency", "source"):
         text_value(data[key], key)
-    if not math.isclose(data["tick_value"], data["point_value"] * data["tick_size"], rel_tol=1e-8):
-        raise ValueError("tick_value must equal point_value × tick_size; point_value already includes the contract multiplier")
+    has_size, has_value = data.get("tick_size") is not None, data.get("tick_value") is not None
+    if has_size != has_value:
+        raise ValueError("Supply both tick_size and tick_value, or omit both for contract_size sizing")
+    if has_size:
+        number(data["tick_size"], "tick_size", positive=True)
+        number(data["tick_value"], "tick_value", positive=True)
+        if not math.isclose(data["tick_value"], data["point_value"] * data["tick_size"], rel_tol=1e-8):
+            raise ValueError("tick_value must equal point_value × tick_size; point_value already includes the contract multiplier")
     if not math.isclose(data["min_quantity"] / data["quantity_step"], round(data["min_quantity"] / data["quantity_step"]), abs_tol=1e-8):
         raise ValueError("min_quantity must be a multiple of quantity_step")
+    if data.get("max_quantity") is not None:
+        number(data["max_quantity"], "max_quantity", positive=True)
+        if data["max_quantity"] < data["min_quantity"] or not math.isclose(data["max_quantity"] / data["quantity_step"], round(data["max_quantity"] / data["quantity_step"]), abs_tol=1e-8):
+            raise ValueError("max_quantity must meet the minimum and quantity step")
     timestamp(data["verified_at"])
     return r.get_record("instrument_specs", insert("instrument_specs", data))
 
@@ -324,7 +344,7 @@ def economics(spec, account, fx_rate=None, fx_source=None, fx_observed_at=None):
         number(fx_rate, "FX account-currency units per quote-currency unit", positive=True)
         text_value(fx_source, "fx_source")
         timestamp(fx_observed_at)
-    return {"instrument_spec_id": spec["id"], "point_value": spec["point_value"], "quote_currency": spec["quote_currency"],
+    return {"instrument_spec_id": spec["id"], "point_value": spec["point_value"], "sizing_method": spec.get("sizing_method", "point_value"), "quote_currency": spec["quote_currency"],
             "account_currency": account["currency"], "fx_rate": fx_rate, "fx_source": fx_source, "fx_observed_at": fx_observed_at,
             "account_point_value": spec["point_value"] * fx_rate}
 
@@ -343,13 +363,15 @@ def validate_trade_economics(trade):
     if assumptions.get("account_currency", account["currency"]) != account["currency"]:
         raise ValueError("Persisted account currency differs from the current account")
     for key in ("entry_price", "exit_price", "stop_price", "take_profit"):
-        if trade.get(key) is not None:
+        if trade.get(key) is not None and spec.get("tick_size") is not None:
             ticks = trade[key] / spec["tick_size"]
             if not math.isclose(ticks, round(ticks), abs_tol=1e-6):
                 raise ValueError(f"{key} must align to instrument tick size")
     quantity = trade.get("quantity", 0)
     if quantity < spec["min_quantity"] or not math.isclose(quantity / spec["quantity_step"], round(quantity / spec["quantity_step"]), abs_tol=1e-7):
         raise ValueError("Trade quantity must meet instrument minimum and step")
+    if spec.get("max_quantity") is not None and quantity > spec["max_quantity"]:
+        raise ValueError("Trade quantity exceeds instrument maximum")
     return result
 
 
@@ -388,7 +410,7 @@ def size_candidate(candidate_id: int, snapshot_id: int, regime_id: int, instrume
     number(snapshot["balance"], "current balance", positive=True)
     for field in ("entry_price", "stop_price"):
         number(plan.get(field), field, positive=True)
-        if not math.isclose(plan[field] / spec["tick_size"], round(plan[field] / spec["tick_size"]), abs_tol=1e-6):
+        if spec.get("tick_size") is not None and not math.isclose(plan[field] / spec["tick_size"], round(plan[field] / spec["tick_size"]), abs_tol=1e-6):
             raise ValueError("Entry/stop must align with instrument tick size")
     pct = regime["risk_pct"] if risk_pct_override is None else risk_pct_override
     number(pct, "risk percentage", positive=True)
@@ -410,19 +432,19 @@ def size_candidate(candidate_id: int, snapshot_id: int, regime_id: int, instrume
     if regime["max_daily_loss"] is not None:
         number(daily_loss, "daily_loss")
         limit = min(limit, max(0, regime["max_daily_loss"] - daily_loss - (existing_open_risk or 0)))
-    loss_per_contract = abs(plan["entry_price"] - plan["stop_price"]) * assumptions["account_point_value"] + costs_per_contract
-    number(loss_per_contract, "cash loss per contract", positive=True)
-    step = Decimal(str(spec["quantity_step"]))
-    quantity = float((Decimal(str(limit)) / Decimal(str(loss_per_contract)) / step).to_integral_value(rounding=ROUND_FLOOR) * step)
-    below_minimum = quantity < spec["min_quantity"]
-    if below_minimum:
-        quantity = 0
+    result = size_cash_risk(plan["entry_price"], plan["stop_price"], limit,
+        point_value=assumptions["account_point_value"], quantity_step=spec["quantity_step"],
+        min_quantity=spec["min_quantity"], max_quantity=spec.get("max_quantity"),
+        costs_per_unit=costs_per_contract, direction=candidate["direction"])
+    quantity, below_minimum = result["quantity"], result["below_minimum"]
     sizing = {**assumptions, "snapshot_id": snapshot_id, "regime_id": regime_id, "observed_at": observed_at,
               "balance_basis": "current_balance", "balance": snapshot["balance"], "balance_source": snapshot["source"], "balance_observed_at": snapshot["observed_at"],
               "risk_pct": pct, "override_scope": "this_trade" if risk_pct_override is not None else "none", "override_reason": override_reason,
               "risk_budget": budget, "allowed_risk": limit, "costs_per_contract": costs_per_contract,
               "existing_open_risk": existing_open_risk, "daily_loss": daily_loss,
-              "quantity": quantity, "actual_risk": round(quantity * loss_per_contract, 8), "below_minimum": below_minimum}
+              "quantity": quantity, "actual_risk": result["actual_risk"], "below_minimum": below_minimum,
+              "capped_at_maximum": result["capped_at_maximum"], "max_quantity": spec.get("max_quantity"),
+              "tick_validation_applied": spec.get("tick_size") is not None}
     plan["sizing"] = sizing
     version = candidate["plan_version"] + 1
     plan_history(candidate_id, version, plan, "Persist verified sizing assumptions")

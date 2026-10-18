@@ -15,6 +15,7 @@ FILES = (
     "utils/mcp_config.py", "utils/mcp_control.py", "utils/mcp_settings_ui.py", "pages/settings.py",
     "utils/runtime_checks.py",
     "utils/neo_ui.py", "utils/pattern_ui.py", "pages/journal.py", "NEO_MCP.md", "PATTERN_MCP.md",
+    "utils/position_sizing.py", "pages/risk_calculator.py", "CFD_SIZING.md",
 )
 
 
@@ -23,6 +24,7 @@ def main():
     files += sorted((ROOT / "journal_mcp").glob("*.py"))
     files += sorted((ROOT / "tests").glob("test_*mcp*.py"))
     files.append(ROOT / "tests" / "test_runtime_checks.py")
+    files += sorted((ROOT / "tests").glob("test_cfd*.py"))
     for path in files:
         if not path.is_file() or not path.resolve().is_relative_to(ROOT):
             raise RuntimeError(f"Missing or invalid source file: {path}")

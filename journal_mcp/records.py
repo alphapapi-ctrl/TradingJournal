@@ -53,6 +53,7 @@ def field_enum(entity, key):
         ("risk_regimes", "mode"): {"demo", "live", "prop"},
         ("management_events", "action_status"): {"observed", "proposed", "executed", "cancelled"},
         ("fill_events", "kind"): {"entry", "exit"},
+        ("instrument_specs", "sizing_method"): {"point_value", "contract_size"},
     }
     return specific.get((entity, key), ENUMS.get(key))
 
@@ -90,7 +91,7 @@ def schema(entity: str | None = None) -> dict:
     for name, contract in schema_contracts().items():
         if name in result:
             result[name]["contract"] = contract
-    return {"schema_version": SCHEMA_VERSION, "capabilities": {"native_patterns": True, "pattern_reports": True, "pattern_evidence_owner": True, "legacy_pattern_migration": True}, "entities": result, "notes": [
+    return {"schema_version": SCHEMA_VERSION, "capabilities": {"native_patterns": True, "pattern_reports": True, "pattern_evidence_owner": True, "legacy_pattern_migration": True, "contract_size_sizing": True}, "entities": result, "notes": [
         "IDs refer to this journal database; inspect existing accounts before creating trades.",
         "Use trade_action for close/partial_close/reopen and position_action to merge/unmerge trades.",
         "Use assign_playbook to store rule checks and calculated risk scores.",
@@ -100,6 +101,7 @@ def schema(entity: str | None = None) -> dict:
         "Playbook thresholds are minimum guards: their consequence applies on failure. Passing all minima defaults to normal / multiplier 1. A score is checklist composition, never probability or a risk-percentage recommendation.",
         "JSON fields accept objects/arrays; raw_data also accepts plain notes text.",
         "Amounts use the account currency. No FX conversion is performed.",
+        "CFD sizing_method=contract_size derives point_value from contract_multiplier; tick_size/tick_value may be omitted. Cash sizing uses exact price distance, lot step/minimum and optional maximum. Known tick pairs still validate prices; unknown ticks do not create a sizing blocker.",
         "These tools manage journal records only; they do not send orders to MT5 or brokers.",
     ]}
 

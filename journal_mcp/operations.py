@@ -197,7 +197,17 @@ def settings(action: str = "get", values: dict | None = None, include_secrets: b
 
 def risk_calculator(entry_price: float, stop_price: float, balance: float, risk_pct: float = 1,
                     direction: str = "LONG", point_value: float = 1, quantity_step: float = 1,
-                    playbook_id: int | None = None, rules_met: dict[str, bool] | None = None) -> dict:
+                    playbook_id: int | None = None, rules_met: dict[str, bool] | None = None,
+                    instrument_key: str | None = None, costs_per_contract: float = 0,
+                    min_quantity: float | None = None, max_quantity: float | None = None) -> dict:
+    from utils.position_sizing import IC_MARKETS_CONTRACTS, size_cash_risk
+    preset = None
+    if instrument_key is not None:
+        if instrument_key not in IC_MARKETS_CONTRACTS:
+            raise ValueError("instrument_key must be ic_gold or ic_us500")
+        preset = IC_MARKETS_CONTRACTS[instrument_key]
+        point_value, quantity_step = preset["contract_size"], preset["quantity_step"]
+        min_quantity, max_quantity = preset["min_quantity"], preset["max_quantity"]
     for key, value in locals().copy().items():
         if key in ("entry_price", "stop_price", "balance", "risk_pct", "point_value", "quantity_step"):
             if not math.isfinite(value) or value <= 0:
@@ -211,10 +221,15 @@ def risk_calculator(entry_price: float, stop_price: float, balance: float, risk_
     if assessment.get("risk_level") == "no_trade":
         multiplier = 0
     risk = balance * risk_pct / 100 * multiplier
-    distance = abs(entry_price - stop_price)
-    qty = math.floor(risk / (distance * point_value) / quantity_step + 1e-10) * quantity_step
-    return {"risk_budget": round(risk, 2), "quantity": round(qty, 8), "actual_risk": round(qty * distance * point_value, 2),
+    sized = size_cash_risk(entry_price, stop_price, risk, point_value, quantity_step,
+        quantity_step if min_quantity is None else min_quantity, max_quantity, costs_per_contract, direction)
+    qty = sized["quantity"]
+    return {"risk_budget": round(risk, 2), "quantity": qty, "actual_risk": round(sized["actual_risk"], 2),
             "position_value": round(qty * entry_price * point_value, 2), "assessment": assessment,
+            "instrument_key": instrument_key, "symbol": preset["symbol"] if preset else None,
+            "quantity_unit": "lots" if preset else "units", "quote_currency": preset["currency"] if preset else None,
+            "costs_per_contract": costs_per_contract, "below_minimum": sized["below_minimum"],
+            "capped_at_maximum": sized["capped_at_maximum"],
             "note": "Sizing only; no broker order is placed. Supply the instrument's account-currency point value."}
 
 
