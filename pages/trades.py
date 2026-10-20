@@ -31,8 +31,11 @@ def _js_switch_tab(index: int):
 
 def show():
     st.header("📋 Trades")
-    tab_calc, tab_add, tab_list, tab_positions, tab_detail = st.tabs([
-        "⚖️ Risk Calculator", "➕ Add Trade", "🔗 Link Trade", "🧩 Positions", "🔍 Trade Detail"
+    if st.session_state.get('_journal_flash'):
+        st.toast(st.session_state.pop('_journal_flash'), icon='✅')
+    tab_calc, tab_add, tab_list, tab_positions, tab_detail, tab_notes, tab_plans, tab_patterns = st.tabs([
+        "⚖️ Risk Calculator", "➕ Add Trade", "🔗 Link Trade", "🧩 Positions", "🔍 Trade Detail",
+        "📊 Trade Notes", "📋 Pre-Trade Plan", "Psychology Patterns"
     ])
 
     # Tab indices: 0=Risk Calc, 1=Add Trade, 2=Link Trade, 3=Positions, 4=Trade Detail
@@ -50,6 +53,22 @@ def show():
     with tab_detail:
         from pages.trade_detail import show as td_show
         td_show(embedded=True)
+    with tab_notes:
+        from utils.trade_review_ui import show_notes
+        show_notes(_review_account('notes'))
+    with tab_plans:
+        from utils.planning_ui import show_plans
+        show_plans(_review_account('plans'))
+    with tab_patterns:
+        from utils.pattern_ui import show as show_patterns
+        show_patterns(_review_account('patterns'))
+
+
+def _review_account(section):
+    from utils.accounts import get_accounts
+    accounts = get_accounts()
+    labels = {item['id']: f"{item['name']} ({item['currency']})" for item in accounts}
+    return st.selectbox('Review account', [None] + list(labels), format_func=lambda key: labels.get(key, 'All accounts'), key=f'trades_review_account_{section}')
 
 
 def _show_trades():
@@ -489,6 +508,6 @@ def _show_positions():
                          (pb_name_id.get(new_name), t["id"]))
                 st.rerun()
             if sc2.button("🔍 Open in Trade Detail", key=f"single_detail_{t['id']}"):
-                st.session_state["detail_trade_id"] = t["id"]
-                st.session_state["_trades_pending_tab"] = 4  # Trade Detail tab
+                from utils.trade_context import open_trade_detail
+                open_trade_detail(t['id'], t.get('account_id'), section='📊 Overview')
                 st.rerun()

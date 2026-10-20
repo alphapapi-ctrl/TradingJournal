@@ -23,8 +23,8 @@ def save_all_settings(data: dict):
 def show():
     st.header("⚙️ Settings")
 
-    tab_accounts, tab_risk, tab_display, tab_ai, tab_data, tab_ftp, tab_network, tab_mcp = st.tabs([
-        "🏦 Accounts", "⚖️ Risk Defaults", "🎨 Display", "🤖 AI", "🗄️ Data", "🔗 MT5 FTP", "🌐 Network", "MCP / AI Access"
+    tab_accounts, tab_risk, tab_display, tab_ai, tab_data, tab_ftp, tab_network, tab_mcp, tab_templates = st.tabs([
+        "🏦 Accounts", "⚖️ Risk Defaults", "🎨 Display", "🤖 AI", "🗄️ Data", "🔗 MT5 FTP", "🌐 Network", "MCP / AI Access", "🗂️ Journal Templates"
     ])
 
     settings = get_settings()
@@ -53,6 +53,10 @@ def show():
     with tab_mcp:
         from utils.mcp_settings_ui import show as show_mcp
         show_mcp()
+
+    with tab_templates:
+        from utils.planning_ui import show_templates
+        show_templates()
 
 
 

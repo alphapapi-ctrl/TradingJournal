@@ -160,10 +160,16 @@ four-state interface for incomplete evidence.
 
 ## Evidence access and the web interface
 
-Journal → **Evidence & Neo** displays sessions/handovers, original and revised
+Trades → **Trade Detail → Evidence & History** displays linked sessions/handovers, original and revised
 plans, images and the immutable management timeline. It can attach screenshots
 and record decisions. Images are validated PNG/JPEG/WebP, up to 8 MiB and 40 MP;
 their SHA-256 hash and context accompany the stored bytes.
+
+This workspace supports all playbooks. It resolves explicit trade, shared position
+and confirmed candidate-fill links; it does not match unrelated entries by symbol
+or date. Trade Detail → **Plan & Review** is the shared editor for pre-trade plans
+and post-trade notes. The **Trade Notes** tab provides review coverage and shortcuts
+to that editor. Existing narrative fields and immutable plan revisions are retained.
 
 `read_evidence` returns base64 chunks and an expiring bearer-capability
 `download_path`. Resolve the path against the configured journal server. An HTTP

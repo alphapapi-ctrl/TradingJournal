@@ -8,7 +8,7 @@ live open P&L (including dividends) and process-compliance reporting.
 
 - **Journal** (default page) — monthly calendar overview with journal coverage, trade-entry
   markers, day drill-down, open positions with live P&L + dividends (yfinance), daily/weekly
-  entries, per-trade & per-position notes with pre/post split
+  entries. Its only tabs are Overview, Daily and Weekly.
 - **Menaker framework** — categorise every trade Type 1–4 (on/off-plan × win/loss),
   pre-trade psychology check (accuracy, smart vs sloppy risk, body scan), autopsy prompts
 - **Stock Analysis** — technicals (EMA 21/50, SMA 200, RSI, OBV, volume-spike/capitulation
@@ -22,7 +22,11 @@ live open P&L (including dividends) and process-compliance reporting.
   CMC Markets, MT5 HTML/CSV, IC Markets; manual entry with account assignment
 - **Trades / Trade Detail** — merge trades into positions (with playbook propagation),
   partial close / full close / reopen, edit any trade (position totals auto-recompute),
-  real price chart with entry/exit marked, EMA 20/50/200, daily/weekly toggle
+  real price chart with entry/exit marked, EMA 20/50/200, daily/weekly toggle.
+  Trades also contains Trade Notes, Pre-Trade Plan and Psychology Patterns. Trade Notes
+  opens the shared Trade Detail editor for plans and reviews; Trade Detail includes
+  screenshots, management history and linked psychology reflections for any playbook.
+  Journal templates are managed under Settings → Journal Templates.
 - **Playbooks** — required/optional/bonus rules with weights, OR-groups (any-one-satisfies),
   risk thresholds with position-size multipliers
 - **Reports** — general performance, Menaker category trends, journal discipline
@@ -88,13 +92,13 @@ measurements, connection checks, and stopping the service.
 
 Neo trading workflows add durable screenshots, management/fill history, versioned
 candidate plans, overnight sessions, balance/risk snapshots and instrument/FX
-sizing. Use **Journal → Evidence & Neo** to review captures and decisions.
+sizing. Use **Trades → Trade Detail → Evidence & History** to review captures and decisions.
 See [NEO_MCP.md](NEO_MCP.md) for the workflow and input contracts. Existing records
 are preserved through an additive startup migration.
 
 Native psychology patterns separate reusable definitions, occurrences and
 follow-ups, with auditable edits, account-scoped recurrence/response reports,
-direct screenshot links and explicit legacy migration. Use **Journal → Psychology
+direct screenshot links and explicit legacy migration. Use **Trades → Psychology
 Patterns**. See [PATTERN_MCP.md](PATTERN_MCP.md); progression and clean-day policies
 remain outside this feature.
 

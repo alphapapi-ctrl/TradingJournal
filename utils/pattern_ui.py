@@ -8,7 +8,11 @@ import streamlit as st
 from journal_mcp import patterns
 
 
-def show(account_id=None):
+def show(account_id=None, trade=None):
+    from utils.trade_context import patterns_for_trade
+    if trade is not None:
+        account_id = trade['account_id']
+    prefix = f"trade_pattern_{trade['id']}" if trade is not None else 'patterns'
     st.subheader("Psychology patterns")
     if account_id is None:
         st.info("Choose an account above to view or record pattern reflections.")
@@ -17,7 +21,7 @@ def show(account_id=None):
     labels = {item["id"]: item["label"] for item in definitions}
     today = datetime.now(ZoneInfo("Australia/Brisbane")).date()
     with st.expander("Record a pattern occurrence"):
-        with st.form("pattern_create"):
+        with st.form(prefix + "_create"):
             event_date = st.date_input("Event date", today)
             timezone = st.text_input("Event timezone", "Australia/Brisbane")
             definition_id = st.selectbox("Pattern", [None] + list(labels), format_func=lambda key: labels.get(key, "Unclassified"))
@@ -35,6 +39,8 @@ def show(account_id=None):
             data = {"entry_key": uuid4().hex, "account_id": account_id, "event_date": str(event_date), "timezone": timezone,
                     "pattern_id": definition_id, "urge_response": urge, "plan_adherence": adherence, "rule_breach": breach,
                     "source": "Journal web interface", "recorded_by": "user"}
+            if trade is not None:
+                data.update(trade_ids=[trade['id']], symbol=trade['symbol'])
             reflections = {"situation": situation, "trigger": trigger, "emotion_body_state": emotion, "automatic_thought": thought, "action_taken": action, "better_response": better}
             data.update({key: value for key, value in reflections.items() if value.strip()})
             data["field_provenance"] = {key: {"kind": "user_report"} for key, value in reflections.items() if value.strip()}
@@ -43,15 +49,20 @@ def show(account_id=None):
                 st.rerun()
             except (patterns.PatternError, ValueError) as exc:
                 st.error(str(exc))
-    pending = patterns.list_records("pattern_entries", {"account_id": account_id, "follow_up_status": "pending"}, limit=100)
-    st.caption(f"Pending reflections: {pending['total']}")
-    entries = patterns.list_records("pattern_entries", {"account_id": account_id}, limit=100)["records"]
+    if trade is not None:
+        entries = patterns_for_trade(trade)
+        pending_count = sum(entry['follow_up_status'] == 'pending' for entry in entries)
+        st.caption('Reflections explicitly linked to this trade, its shared position or candidate.')
+    else:
+        entries = patterns.list_records("pattern_entries", {"account_id": account_id}, limit=100)["records"]
+        pending_count = patterns.list_records("pattern_entries", {"account_id": account_id, "follow_up_status": "pending"}, limit=1)['total']
+    st.caption(f"Pending reflections: {pending_count}")
     if entries:
         by_id = {entry["id"]: entry for entry in entries}
-        selected = st.selectbox("Reflection", list(by_id), format_func=lambda key: f"#{key} · {by_id[key]['event_date']} · {by_id[key]['title'] or labels.get(by_id[key]['pattern_id'], 'Unclassified')}")
+        selected = st.selectbox("Reflection", list(by_id), format_func=lambda key: f"#{key} · {by_id[key]['event_date']} · {by_id[key]['title'] or labels.get(by_id[key]['pattern_id'], 'Unclassified')}", key=prefix + "_selected")
         entry = patterns.details("pattern_entries", selected)
         st.json(entry)
-        with st.form(f"pattern_followup_{selected}"):
+        with st.form(f"{prefix}_followup_{selected}"):
             note = st.text_area("Follow-up note")
             followup_status = st.selectbox("Follow-up status", ["pending", "reviewed", "not_required"], index=["pending", "reviewed", "not_required"].index(entry["follow_up_status"]))
             intention = st.text_input("Next-session intention", entry.get("next_session_intention") or '')
@@ -66,6 +77,8 @@ def show(account_id=None):
                 st.rerun()
             except (patterns.PatternError, ValueError) as exc:
                 st.error(str(exc))
+    if trade is not None:
+        return
     with st.expander("Pattern report"):
         start = st.date_input("Report from", today - timedelta(days=29))
         end = st.date_input("Report through", today)

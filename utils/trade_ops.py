@@ -221,6 +221,9 @@ def merge_trades_into_position(trade_ids: list[int], notes: str = "",
     if not trades:
         raise ValueError("No valid trades found")
 
+    if len({t.get('account_id') for t in trades}) != 1:
+        raise ValueError('Cannot merge trades from different accounts')
+
     symbols = set(t["symbol"] for t in trades)
     if len(symbols) > 1:
         raise ValueError(f"Cannot merge trades with different symbols: {symbols}")
@@ -316,13 +319,18 @@ def save_journal_entry(entry_id, entry_type, entry_date, analysis, execution, ps
               stage, playbook_id, trade_category, entry_id))
         return entry_id
     else:
+        account_id = None
+        if trade_id or position_id:
+            record_id = trade_id or position_id
+            owner = fetch_one('SELECT account_id FROM trades WHERE id=?' if trade_id else 'SELECT MIN(account_id) AS account_id FROM trades WHERE position_id=?', (record_id,))
+            account_id = owner['account_id'] if owner else None
         return execute("""
             INSERT INTO journal_entries (entry_type, entry_date, trade_id, position_id, analysis,
-                execution, psychology, lessons, grade, mood, custom_fields, stage, playbook_id, trade_category)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                execution, psychology, lessons, grade, mood, custom_fields, stage, playbook_id, trade_category, account_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (entry_type, entry_date, trade_id, position_id, analysis, execution, psychology,
               lessons, grade, mood, json.dumps(custom_fields) if custom_fields else None,
-              stage, playbook_id, trade_category))
+              stage, playbook_id, trade_category, account_id))
 
 def delete_journal_entry(entry_id):
     execute("DELETE FROM journal_entries WHERE id=?", (entry_id,))

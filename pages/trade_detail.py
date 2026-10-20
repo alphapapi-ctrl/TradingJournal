@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from database import fetch_all, fetch_one
 from utils.trade_ops import (
     get_trade, get_trades, update_trade_playbook, delete_trade,
-    get_journal_entry, save_journal_entry, get_templates,
     close_trade, partial_close_trade, reopen_trade
 )
 from utils.playbook_logic import get_playbooks, get_playbook, evaluate_trade_risk
@@ -24,6 +23,9 @@ def show(embedded=False):
     from utils.accounts import get_accounts
     accounts = get_accounts()
     acc_options = {"All Accounts": None} | {a["name"]: a["id"] for a in accounts}
+    requested_account = st.session_state.pop('detail_account_id', None)
+    if requested_account is not None:
+        st.session_state['td_account'] = next((name for name, value in acc_options.items() if value == requested_account), 'All Accounts')
 
     col_acc, col1 = st.columns([1, 4])
     with col_acc:
@@ -79,9 +81,16 @@ def show(embedded=False):
     _trade_header(trade)
     st.divider()
 
-    tab_overview, tab_manage, tab_playbook, tab_journal, tab_related = st.tabs([
-        "📊 Overview", "🛠️ Manage", "📖 Playbook", "📔 Journal", "🔗 Related"
+    tab_overview, tab_manage, tab_playbook, tab_journal, tab_evidence, tab_psychology, tab_related = st.tabs([
+        "📊 Overview", "🛠️ Manage", "📖 Playbook", "📔 Plan & Review", "📷 Evidence & History", "🧠 Psychology", "🔗 Related"
     ])
+    section = st.session_state.pop('_detail_section', None)
+    if section:
+        import streamlit.components.v1 as components
+        components.html(f"""<script>setTimeout(function(){{
+            var tabs=window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+            for (var tab of tabs) if(tab.textContent.trim()==={json.dumps(section)}) {{tab.click();break;}}
+        }},120);</script>""", height=0)
 
     with tab_overview:
         _trade_overview(trade)
@@ -94,6 +103,14 @@ def show(embedded=False):
 
     with tab_journal:
         _trade_journal_tab(trade)
+
+    with tab_evidence:
+        from utils.neo_ui import show as show_evidence
+        show_evidence(trade=trade)
+
+    with tab_psychology:
+        from utils.pattern_ui import show as show_patterns
+        show_patterns(trade=trade)
 
     with tab_related:
         _trade_related(trade)
@@ -565,53 +582,8 @@ def _trade_playbook(trade):
 # ── Journal Tab ───────────────────────────────────────────────────────────────
 
 def _trade_journal_tab(trade):
-    existing = fetch_one(
-        "SELECT * FROM journal_entries WHERE trade_id=? AND entry_type='trade' ORDER BY created_at DESC LIMIT 1",
-        (trade["id"],)
-    )
-    templates = get_templates("trade")
-
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        template = None
-        if templates:
-            sel_t = st.selectbox("Template", ["None"] + [t["name"] for t in templates], key="td_tmpl")
-            template = next((t for t in templates if t["name"] == sel_t), None) if sel_t != "None" else None
-
-    t = template or {}
-    e = existing or {}
-
-    if st.session_state.pop("_td_journal_saved", None):
-        st.toast("Journal notes saved!", icon="✅")
-
-    tid = trade["id"]
-    analysis   = st.text_area("📊 Analysis",   value=e.get("analysis")   or t.get("analysis_template",""),   height=150, key=f"td_analysis_{tid}")
-    execution  = st.text_area("⚡ Execution",  value=e.get("execution")  or t.get("execution_template",""),  height=150, key=f"td_execution_{tid}")
-    psychology = st.text_area("🧠 Psychology", value=e.get("psychology") or t.get("psychology_template",""), height=150, key=f"td_psychology_{tid}")
-    lessons    = st.text_area("💡 Lessons",    value=e.get("lessons", ""), height=80, key=f"td_lessons_{tid}")
-
-    col1, col2, col3 = st.columns(3)
-    GRADES = ["", "A+", "A", "B+", "B", "C+", "C", "D", "F"]
-    grade_idx = GRADES.index(e.get("grade", "")) if e.get("grade") in GRADES else 0
-    grade = col1.selectbox("Grade", GRADES, index=grade_idx, key=f"td_grade_{tid}")
-    mood  = col2.slider("Mood", 1, 10, value=int(e.get("mood") or 5), key=f"td_mood_{tid}")
-
-    if st.button("💾 Save Journal Notes", type="primary"):
-        entry_date = (trade.get("entry_time") or "")[:10] or str(pd.Timestamp.today().date())
-        save_journal_entry(
-            entry_id=e.get("id"),
-            entry_type="trade",
-            entry_date=entry_date,
-            analysis=analysis, execution=execution,
-            psychology=psychology, lessons=lessons,
-            grade=grade, mood=mood,
-            trade_id=trade["id"],
-        )
-        st.session_state["_td_journal_saved"] = True
-        st.rerun()
-    if e.get("id"):
-        ts = (e.get("updated_at") or e.get("created_at") or "")[:16]
-        st.caption(f"✅ Saved entry #{e['id']}" + (f" · last updated {ts}" if ts else ""))
+    from utils.trade_review_ui import show_review
+    show_review(trade)
 
 
 # ── Related Trades Tab ────────────────────────────────────────────────────────
