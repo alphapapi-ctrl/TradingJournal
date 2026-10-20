@@ -1,5 +1,6 @@
 """Trade workspace navigation and editing against disposable journals."""
 import base64
+import asyncio
 import io
 import json
 import tempfile
@@ -7,9 +8,11 @@ import unittest
 from pathlib import Path
 
 from PIL import Image
+from mcp import Client
 from streamlit.testing.v1 import AppTest
 import database as db
 from journal_mcp import neo, patterns, records
+from journal_mcp.server import create_server
 from utils.trade_context import entries_for_trade, history_for_trade, patterns_for_trade, linked_entries
 from utils.trade_ops import merge_trades_into_position
 
@@ -85,7 +88,7 @@ with patch.object(journal, '_open_positions_section'):
         self.assertEqual(app.session_state['detail_account_id'], self.account)
 
     def test_full_trades_page_renders_without_duplicate_widgets(self):
-        self.entry()
+        self.capture(self.entry())
         app = self.app("""
 from unittest.mock import patch
 from pages import trades, trade_detail
@@ -113,12 +116,15 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertEqual((saved['analysis'], saved['pre_plan'], saved['playbook_id']), ('Swing review', 'Original swing plan', self.playbook))
         self.assertEqual(json.loads(saved['custom_fields']), {'preserve': 'metadata'})
         self.assertEqual(db.fetch_one("SELECT COUNT(*) n FROM journal_entries WHERE entry_type='trade'")['n'], 1)
-        self.assertEqual(len(app.get('imgs')), 1)
+        self.assertEqual(len(app.tabs[0].get('imgs')), 1)
+        self.assertEqual(len(app.tabs[4].get('imgs')), 1)
         plans = self.app(f'from utils.planning_ui import show_plans\nshow_plans({self.account})')
         self.assertIn(f"open_plan_{entry['id']}", [button.key for button in plans.button])
 
     def test_direct_preplan_edit_and_new_review_inherit_account(self):
         app = self.detail()
+        self.assertTrue(any(item.value == 'No pre-trade screenshots attached yet.' for item in app.tabs[0].caption))
+        self.assertTrue(any(item.value == 'No post-trade screenshots attached yet.' for item in app.tabs[0].caption))
         app.button(key=f"add_pre_btn_{self.trade['id']}").click().run()
         app.text_area(key=f"i_plan_{self.trade['id']}").set_value('New plan')
         app.button(key=f"save_pre_{self.trade['id']}").click().run()
@@ -134,6 +140,48 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         app.button(key='save_' + key).click().run()
         self.assertFalse(app.exception, str(app.exception))
         self.assertEqual(db.fetch_one('SELECT account_id FROM journal_entries WHERE trade_id=?', (second['id'],))['account_id'], self.account)
+
+    def test_mcp_trade_detail_fields_and_menaker_round_trip_with_ui(self):
+        entry = self.entry()
+        review = {'stage': 'post', 'pre_analysis': 'Setup analysis', 'pre_plan': 'Original swing plan',
+            'pre_playbook_notes': 'Rules checked', 'pre_psychology': 'Ready', 'pre_risk_notes': 'Defined risk',
+            'pre_body_state': 'Relaxed', 'pre_accuracy_check': 'Accurate', 'pre_risk_type': 'Smart risk',
+            'analysis': 'Review analysis', 'execution': 'Planned execution', 'psychology': 'Calm',
+            'lessons': 'Repeat the process', 'grade': 'A', 'mood': 8, 'trade_category': 2}
+
+        async def check_mcp():
+            async with Client(create_server()) as client:
+                schema = (await client.call_tool('journal_schema', {'entity': 'journal_entries'})).structured_content
+                fields = schema['entities']['journal_entries']['fields']
+                self.assertTrue(all(fields[key]['writable'] for key in review))
+                self.assertEqual(fields['trade_category']['enum'], [1, 2, 3, 4])
+                self.assertIn('Menaker', fields['trade_category']['description'])
+                saved = await client.call_tool('save_record', {'entity': 'journal_entries', 'record_id': entry['id'],
+                    'expected_revision': entry['revision'], 'data': review})
+                self.assertFalse(saved.is_error)
+                read = (await client.call_tool('get_record', {'entity': 'journal_entries', 'record_id': entry['id']})).structured_content
+                for key, value in review.items():
+                    self.assertEqual(read[key], value)
+                invalid = await client.call_tool('save_record', {'entity': 'journal_entries', 'record_id': entry['id'], 'data': {'trade_category': 5}})
+                self.assertTrue(invalid.is_error)
+        asyncio.run(asyncio.wait_for(check_mcp(), timeout=20))
+        app = self.detail()
+        suffix = f"trade_2026-10-18_post_{self.trade['id']}_None"
+        self.assertEqual(app.selectbox(key='grade_' + suffix).value, 'A')
+        self.assertTrue(app.radio(key='cat_' + suffix).value.startswith('Type 2'))
+        self.assertEqual(app.text_area(key='analysis_' + suffix).value, review['analysis'])
+        app.selectbox(key='grade_' + suffix).select('B+')
+        app.radio(key='cat_' + suffix).set_value('Type 1 — On-plan ✅ + Profit')
+        app.button(key='save_' + suffix).click().run()
+        self.assertFalse(app.exception, str(app.exception))
+
+        async def read_ui_update():
+            async with Client(create_server()) as client:
+                result = await client.call_tool('get_record', {'entity': 'journal_entries', 'record_id': entry['id']})
+                self.assertEqual(result.structured_content['grade'], 'B+')
+                self.assertEqual(result.structured_content['trade_category'], 1)
+                self.assertEqual(result.structured_content['pre_plan'], review['pre_plan'])
+        asyncio.run(asyncio.wait_for(read_ui_update(), timeout=20))
 
     def test_native_candidate_fill_review_keeps_single_record_and_plan_versions(self):
         session = neo.save_session({'session_key': 'workspace', 'account_id': self.account, 'exchange_date': '2026-10-17',
@@ -197,7 +245,39 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertEqual([row['id'] for row in patterns_for_trade(self.trade)], [linked['id']])
         app = self.detail()
         self.assertEqual(app.selectbox(key=f"trade_pattern_{self.trade['id']}_selected").options[0].split(' · ')[0], f"#{linked['id']}")
-        self.assertEqual(len(app.get('imgs')), 1)
+        self.assertEqual(len(app.tabs[0].get('imgs')), 1)
+        self.assertEqual(len(app.tabs[4].get('imgs')), 1)
+
+    def test_overview_screenshots_compare_pre_post_and_select_multiple_captures(self):
+        entry = self.entry()
+        first = self.capture(entry, filename='before-first.png')
+        latest = self.capture(entry, filename='before-latest.png', captured_at='2026-10-18T10:01:00+10:00')
+        post = self.capture(entry, filename='after.png', stage='post')
+        post_latest = self.capture(entry, filename='after-latest.png', stage='post', captured_at='2026-10-18T11:01:00+10:00')
+        management = self.capture(entry, filename='management.png', stage='management')
+        unrelated = self.capture(self.entry(trade_id=self.new_trade()['id']), filename='unrelated.png')
+        app = self.detail()
+        overview = app.tabs[0]
+        self.assertEqual(len(overview.get('imgs')), 2)
+        self.assertTrue(any(item.value == '**Pre-trade (2)**' for item in overview.markdown))
+        self.assertTrue(any(item.value == '**Post-trade (2)**' for item in overview.markdown))
+        selector = app.selectbox(key=f"trade_screenshot_{self.trade['id']}_pre")
+        self.assertEqual(selector.value, latest['id'])
+        self.assertEqual(len(selector.options), 2)
+        self.assertEqual(len(overview.get('download_button')), 2)
+        captions = '\n'.join(item.value for item in overview.caption)
+        self.assertIn('before-latest.png', captions)
+        self.assertIn('after-latest.png', captions)
+        self.assertNotIn(management['filename'], captions)
+        self.assertNotIn(unrelated['filename'], captions)
+        selector.select(first['id']).run()
+        self.assertFalse(app.exception, str(app.exception))
+        self.assertTrue(any('before-first.png' in item.value for item in app.tabs[0].caption))
+        self.assertEqual(app.selectbox(key=f"trade_screenshot_{self.trade['id']}_post").value, post_latest['id'])
+        app.selectbox(key=f"trade_screenshot_{self.trade['id']}_post").select(post['id']).run()
+        self.assertFalse(app.exception, str(app.exception))
+        self.assertTrue(any('after.png' in item.value for item in app.tabs[0].caption))
+        self.assertEqual(app.selectbox(key=f"trade_screenshot_{self.trade['id']}_pre").value, first['id'])
 
     def test_trade_reflection_creation_and_shared_position_event(self):
         second = self.new_trade()

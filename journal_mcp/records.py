@@ -46,6 +46,7 @@ DEFAULTS = {
 
 def field_enum(entity, key):
     specific = {
+        ('journal_entries', 'trade_category'): {1, 2, 3, 4},
         ("playbooks", "direction"): {"LONG", "SHORT", "BOTH"},
         ("evidence", "stage"): {"pre", "management", "post"},
         ("candidates", "status"): {"draft", "assessed", "blocked", "pending", "cancelled", "open", "closed"},
@@ -84,6 +85,8 @@ def schema(entity: str | None = None) -> dict:
             "create": name not in READ_ONLY and name != "positions",
             "fields": {key: {"type": col["type"], "required": bool(col["notnull"] and col["dflt_value"] is None),
                              "default_sql": col["dflt_value"], "writable": key in writable(name),
+                             **({'description': 'Menaker category: 1 = on-plan profit; 2 = on-plan predefined loss; 3 = off-plan loss; 4 = off-plan profit. Null means unrated. Set only from the recorded plan and review.'} if name == 'journal_entries' and key == 'trade_category' else {}),
+                             **({'description': 'Review grade, separate from the Menaker category and calculated playbook risk score.'} if name == 'journal_entries' and key == 'grade' else {}),
                              **({"enum": sorted(field_enum(name, key))} if field_enum(name, key) else {})}
                        for key, col in fields.items()},
         }
@@ -95,6 +98,7 @@ def schema(entity: str | None = None) -> dict:
         "IDs refer to this journal database; inspect existing accounts before creating trades.",
         "Use trade_action for close/partial_close/reopen and position_action to merge/unmerge trades.",
         "Use assign_playbook to store rule checks and calculated risk scores.",
+        "Trade Detail pre/post notes, Menaker trade_category, grade, mood and pre-trade psychology are journal_entries fields linked by trade_id, position_id or a confirmed candidate fill. Read them with list_records/get_record and patch with save_record. Screenshots, management history and native psychology patterns use their dedicated entities/tools.",
         "Updates are patches: omitted fields stay unchanged; null clears a nullable field.",
         "save_record/trade_action accept idempotency_key and expected_revision. A conflicting retry fails; read and merge after a revision conflict. UI updates also advance revisions.",
         "Neo entities use dedicated workflow tools; list_records/get_record read their history. candidate_plans, events, evidence, snapshots and instrument specs are append-only.",

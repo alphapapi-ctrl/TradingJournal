@@ -170,6 +170,8 @@ and confirmed candidate-fill links; it does not match unrelated entries by symbo
 or date. Trade Detail → **Plan & Review** is the shared editor for pre-trade plans
 and post-trade notes. The **Trade Notes** tab provides review coverage and shortcuts
 to that editor. Existing narrative fields and immutable plan revisions are retained.
+Trade Detail → **Overview** also shows pre/post-trade screenshots side by side;
+when a stage has several captures, select which one to compare or download.
 
 `read_evidence` returns base64 chunks and an expiring bearer-capability
 `download_path`. Resolve the path against the configured journal server. An HTTP

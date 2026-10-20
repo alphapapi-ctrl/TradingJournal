@@ -26,6 +26,7 @@ live open P&L (including dividends) and process-compliance reporting.
   Trades also contains Trade Notes, Pre-Trade Plan and Psychology Patterns. Trade Notes
   opens the shared Trade Detail editor for plans and reviews; Trade Detail includes
   screenshots, management history and linked psychology reflections for any playbook.
+  Overview shows pre/post-trade screenshots side by side, with selection for multiple captures.
   Journal templates are managed under Settings → Journal Templates.
 - **Playbooks** — required/optional/bonus rules with weights, OR-groups (any-one-satisfies),
   risk thresholds with position-size multipliers

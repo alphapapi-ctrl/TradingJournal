@@ -93,6 +93,8 @@ def show(embedded=False):
         }},120);</script>""", height=0)
 
     with tab_overview:
+        from utils.neo_ui import show_trade_screenshots
+        show_trade_screenshots(trade)
         _trade_overview(trade)
 
     with tab_manage:

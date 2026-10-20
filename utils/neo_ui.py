@@ -9,6 +9,35 @@ import database as db
 from journal_mcp import neo
 
 
+def show_trade_screenshots(trade):
+    """Visible before/after comparison using the same explicit links as evidence."""
+    from utils.trade_context import history_for_trade
+    evidence = history_for_trade(trade)['evidence']
+    st.subheader('Pre / post-trade screenshots')
+    st.caption('Add or manage screenshots in Evidence & History.')
+    for column, stage, title in zip(st.columns(2), ('pre', 'post'), ('Pre-trade', 'Post-trade')):
+        with column:
+            captures = [capture for capture in evidence if capture['stage'] == stage]
+            st.markdown(f'**{title} ({len(captures)})**')
+            if not captures:
+                st.caption(f'No {title.lower()} screenshots attached yet.')
+                continue
+            capture = captures[-1]
+            if len(captures) > 1:
+                by_id = {capture['id']: capture for capture in captures}
+                selected = st.selectbox(f'{title} screenshot', list(by_id), index=len(captures) - 1,
+                    format_func=lambda key, by_id=by_id: f"#{key} · {by_id[key]['captured_at']} · {by_id[key]['timeframe']} · {by_id[key]['filename']}",
+                    key=f"trade_screenshot_{trade['id']}_{stage}")
+                capture = by_id[selected]
+            metadata, content = neo.evidence_bytes(capture['id'])
+            st.image(content, use_column_width=True, caption=f"{metadata['symbol']} · {metadata['timeframe']} · {metadata['captured_at']}")
+            st.caption(f"{metadata['filename']} · {metadata['source']}")
+            if metadata.get('chart_context'):
+                st.caption(metadata['chart_context'])
+            st.download_button('Download screenshot', content, metadata['filename'], metadata['mime_type'],
+                key=f"trade_screenshot_download_{trade['id']}_{metadata['id']}")
+
+
 def show(account_id=None, trade=None):
     from utils.trade_context import entries_for_trade, history_for_trade
     st.subheader("Evidence and management history")

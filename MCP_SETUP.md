@@ -228,6 +228,10 @@ Evidence & History** displays linked screenshots, plan revisions, handovers and 
 Record editing covers accounts, trades, daily/weekly/trade journal entries,
 all pre/post analysis and psychology fields, grades and categories, templates,
 playbooks/rules/thresholds, saved risk setups, and replay session state.
+Trade Detail review fields live in `journal_entries`: `trade_category` is the
+Menaker Type 1–4 category, `grade` is the separate review grade, and `mood` is 1–10.
+Use explicit trade/position/candidate links; moving the UI tabs does not copy records
+or assign missing ratings. Screenshot stages are `pre`, `management` and `post`.
 Positions are created by merging trades. Import history and indexed reference
 features are generated records and can be inspected but not arbitrarily edited.
 
