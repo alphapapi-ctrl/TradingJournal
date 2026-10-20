@@ -279,6 +279,24 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertTrue(any('after.png' in item.value for item in app.tabs[0].caption))
         self.assertEqual(app.selectbox(key=f"trade_screenshot_{self.trade['id']}_pre").value, first['id'])
 
+    def test_screenshots_render_when_streamlit_rejects_removed_image_option(self):
+        entry = self.entry()
+        self.capture(entry)
+        self.capture(entry, stage='post')
+        app = self.app("""
+from unittest.mock import patch
+import streamlit as st
+from pages import trade_detail
+original_image = st.image
+# Reproduce the remote image API: use_column_width is no longer accepted.
+def current_image(image, caption=None, *, use_container_width=None):
+    return original_image(image, caption=caption, use_container_width=use_container_width)
+with patch.object(st, 'image', current_image), patch.object(trade_detail, '_price_history_for', return_value=(None,None)):
+    trade_detail.show(embedded=True)
+""")
+        self.assertEqual(len(app.tabs[0].get('imgs')), 2)
+        self.assertEqual(len(app.tabs[4].get('imgs')), 2)
+
     def test_trade_reflection_creation_and_shared_position_event(self):
         second = self.new_trade()
         position_id = merge_trades_into_position([self.trade['id'], second['id']])

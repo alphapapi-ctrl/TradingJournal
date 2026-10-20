@@ -30,7 +30,7 @@ def show_trade_screenshots(trade):
                     key=f"trade_screenshot_{trade['id']}_{stage}")
                 capture = by_id[selected]
             metadata, content = neo.evidence_bytes(capture['id'])
-            st.image(content, use_column_width=True, caption=f"{metadata['symbol']} · {metadata['timeframe']} · {metadata['captured_at']}")
+            st.image(content, use_container_width=True, caption=f"{metadata['symbol']} · {metadata['timeframe']} · {metadata['captured_at']}")
             st.caption(f"{metadata['filename']} · {metadata['source']}")
             if metadata.get('chart_context'):
                 st.caption(metadata['chart_context'])
