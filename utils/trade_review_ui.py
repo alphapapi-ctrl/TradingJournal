@@ -1,12 +1,11 @@
-"""Trade reviews shared by the review queue and the Trade Detail workspace."""
+"""Pre-trade planning and post-trade review in the Trade Detail workspace."""
 import streamlit as st
-import json
 from datetime import date
 from database import fetch_all, execute
 from utils.trade_ops import get_templates
-from utils.playbook_logic import get_playbooks, get_playbook
-from pages.journal import _p, _acc_where, _journal_form, _flash
-from utils.trade_context import entries_for_trade, open_trade_detail, linked_entries
+from utils.playbook_logic import get_playbooks
+from pages.journal import _p, _journal_form, _flash
+from utils.trade_context import entries_for_trade, linked_entries
 
 
 def _get_entry(entry_type, entry_date, trade_id=None, stage=None):
@@ -24,7 +23,7 @@ def _get_position_entry(position_id, stage=None):
     return next((row for row in entries if row.get('stage') == 'post'), None) or (entries[0] if entries else None)
 
 
-def show_review(trade):
+def show_review(trade, between=None):
     templates = get_templates('trade')
     chosen = st.selectbox('Review template', [None] + [row['id'] for row in templates], format_func=lambda key: next((row['name'] for row in templates if row['id']==key), 'None'), key=f"review_template_{trade['id']}")
     template = next((row for row in templates if row['id']==chosen), None)
@@ -43,198 +42,12 @@ def show_review(trade):
         scope = st.selectbox('Journal scope', ['This trade', 'Merged position'], key=key)
     if scope == 'Merged position':
         trades = fetch_all('SELECT * FROM trades WHERE position_id=? AND account_id=? ORDER BY id', (position['id'], trade['account_id']))
-        _journal_position(position['id'], {'pos': position, 'trades': trades}, template, _p())
+        _journal_position(position['id'], {'pos': position, 'trades': trades}, template, _p(), between)
     else:
-        _journal_single_trade(trade['id'], [trade], template, _p())
+        _journal_single_trade(trade['id'], [trade], template, _p(), between)
 
 
-def show_notes(account_id=None):
-    p = _p()
-    st.subheader("Trade Notes")
-    st.caption("Review coverage and open the shared plan/review editor in Trade Detail. Merged positions remain a single journal unit.")
-
-    acc_frag, acc_params = _acc_where(account_id)
-    raw_trades = fetch_all(
-        f"""SELECT * FROM trades WHERE status IN ('open','closed') AND {acc_frag}
-            ORDER BY status='closed', id DESC LIMIT 500""",
-        acc_params,
-    )
-    if not raw_trades:
-        st.info("No trades found for the selected account.")
-        return
-
-    # ── Build reviewed sets ───────────────────────────────────────────────────
-    all_trade_ids = [t["id"] for t in raw_trades]
-    reviewed_trade_ids = set()
-    if all_trade_ids:
-        ph = ",".join("?" * len(all_trade_ids))
-        rows = fetch_all(
-            f"""SELECT DISTINCT t.id AS trade_id FROM trades t
-                JOIN journal_entries j ON j.trade_id=t.id OR j.id IN (
-                    SELECT c.journal_entry_id FROM candidates c JOIN fill_events f ON f.candidate_id=c.id
-                    WHERE f.trade_id=t.id AND f.account_id=t.account_id)
-                WHERE j.stage='post' AND j.entry_type='trade' AND t.id IN ({ph})
-                AND (j.account_id IS NULL OR j.account_id=t.account_id)
-                AND NOT EXISTS (SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=j.id)""",
-            all_trade_ids,
-        )
-        reviewed_trade_ids = {r["trade_id"] for r in rows}
-
-    # Position-level reviews propagate to their constituent trades
-    reviewed_pos_ids = set()
-    pos_review_rows = fetch_all(
-        """SELECT DISTINCT j.position_id FROM journal_entries j JOIN positions pos ON pos.id=j.position_id
-           WHERE j.stage='post' AND j.entry_type='trade' AND (j.account_id IS NULL OR EXISTS (SELECT 1 FROM trades t WHERE t.position_id=pos.id AND t.account_id=j.account_id))
-           AND NOT EXISTS (SELECT 1 FROM pattern_entries p WHERE p.legacy_journal_entry_id=j.id)"""
-    )
-    reviewed_pos_ids = {r["position_id"] for r in pos_review_rows}
-
-    # ── Build unified selector items ──────────────────────────────────────────
-    # positions that have at least one trade in raw_trades
-    trade_pos_ids = {t["position_id"] for t in raw_trades if t.get("position_id")}
-    positions_in_scope = {}
-    for pos_id in trade_pos_ids:
-        pos_trades = [t for t in raw_trades if t.get("position_id") == pos_id]
-        if not pos_trades:
-            continue
-        pos_row = fetch_all("SELECT * FROM positions WHERE id=?", (pos_id,))
-        if pos_row:
-            positions_in_scope[pos_id] = {"pos": pos_row[0], "trades": pos_trades}
-
-    # Items: ("pos", position_id) or ("trade", trade_id)
-    items = []
-    seen_trade_ids = set()
-    # Positions first, sorted by highest trade number they contain
-    for pos_id, pd_ in sorted(
-        positions_in_scope.items(),
-        key=lambda kv: max(t["id"] for t in kv[1]["trades"]),
-        reverse=True,
-    ):
-        items.append(("pos", pos_id))
-        for t in pd_["trades"]:
-            seen_trade_ids.add(t["id"])
-
-    # Individual trades not part of any position
-    for t in raw_trades:
-        if t["id"] not in seen_trade_ids:
-            items.append(("trade", t["id"]))
-
-    # ── Filter ────────────────────────────────────────────────────────────────
-    col1, col3 = st.columns([4, 1])
-    with col3:
-        filter_opt = st.selectbox("Show", ["All", "Not reviewed", "Reviewed"], key="tj_filter")
-
-    def item_reviewed(item):
-        kind, iid = item
-        if kind == "pos":
-            return iid in reviewed_pos_ids
-        return iid in reviewed_trade_ids
-
-    if filter_opt == "Not reviewed":
-        items = [i for i in items if not item_reviewed(i)]
-    elif filter_opt == "Reviewed":
-        items = [i for i in items if item_reviewed(i)]
-
-    if not items:
-        st.caption("No items match the current filter.")
-        return
-
-    # Coverage summary
-    n_positions = len(positions_in_scope)
-    n_ind_trades = len([t for t in raw_trades if t["id"] not in seen_trade_ids])
-    n_units = n_positions + n_ind_trades
-    n_rev = sum(1 for pos_id in positions_in_scope if pos_id in reviewed_pos_ids)
-    n_rev += sum(1 for t in raw_trades if t["id"] not in seen_trade_ids and t["id"] in reviewed_trade_ids)
-    pct = n_rev / n_units * 100 if n_units else 0
-    bar_col = p["--accent"] if pct >= 80 else (p["--warning"] if pct >= 50 else p["--danger"])
-    st.markdown(
-        f'<div style="margin:4px 0 10px;font-size:0.78rem;color:{p["--text-muted"]};">'
-        f'Journal coverage: <b style="color:{bar_col};">{n_rev}/{n_units}</b> '
-        f'units reviewed ({pct:.0f}%) '
-        f'<span style="color:{p["--text-faint"]};">· {n_positions} position{"s" if n_positions!=1 else ""}, '
-        f'{n_ind_trades} individual trade{"s" if n_ind_trades!=1 else ""}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── Selector ──────────────────────────────────────────────────────────────
-    def item_label(item):
-        kind, iid = item
-        rev = "✅" if item_reviewed(item) else "⚠️"
-        if kind == "pos":
-            pd_ = positions_in_scope[iid]
-            pos = pd_["pos"]
-            tr  = pd_["trades"]
-            pnl = sum(float(t.get("pnl") or 0) for t in tr)
-            dt  = min((t.get("entry_time") or "")[:10] for t in tr)
-            return f"{rev} POS-{iid}  {pos['symbol']} {pos['direction']}  {dt}  ({len(tr)} trades)  {pnl:+.2f}"
-        else:
-            t = next((t for t in raw_trades if t["id"] == iid), None)
-            if not t: return str(iid)
-            if t.get("status") == "open":
-                return f"{rev} 🔓 #{iid}  {t['symbol']} {t['direction']}  {(t.get('entry_time') or '')[:10]}  (open)"
-            pnl = float(t.get("pnl") or 0)
-            return f"{rev} #{iid}  {t['symbol']} {t['direction']}  {(t.get('entry_time') or '')[:10]}  {pnl:+.2f}"
-
-    # Handle prefill from calendar drill-down (trade_id → find its item)
-    prefill_trade_id = st.session_state.pop("trade_journal_selected", None)
-    default_index = 0
-    if prefill_trade_id:
-        for idx, item in enumerate(items):
-            kind, iid = item
-            if kind == "trade" and iid == prefill_trade_id:
-                default_index = idx
-                break
-            if kind == "pos":
-                if any(t["id"] == prefill_trade_id for t in positions_in_scope[iid]["trades"]):
-                    default_index = idx
-                    break
-
-    with col1:
-        selected_item = st.selectbox(
-            "Select position or trade", items,
-            format_func=item_label,
-            index=default_index,
-            key="tj_item_sel",
-        )
-
-    kind, selected_id = selected_item
-    if kind == 'pos':
-        trade = max(positions_in_scope[selected_id]['trades'], key=lambda item: item['id'])
-    else:
-        trade = next(item for item in raw_trades if item['id'] == selected_id)
-    st.caption('Plan, review, playbook, screenshots and management history are edited together in Trade Detail.')
-    if st.button('Open plan & review', key='open_trade_review', type='primary'):
-        open_trade_detail(trade['id'], trade['account_id'], position_scope=kind == 'pos')
-        st.rerun()
-
-
-def _playbook_expander(pb_id, rules_met_json=None):
-    """Collapsible playbook details: description + rules, marking met rules when known."""
-    if not pb_id:
-        return
-    pb = get_playbook(pb_id)
-    if not pb:
-        return
-    met = {}
-    if rules_met_json:
-        try:
-            met = {str(k): v for k, v in json.loads(rules_met_json).items()}
-        except Exception:
-            pass
-    with st.expander(f"📖 Playbook: {pb['name']}"):
-        if pb.get("description"):
-            st.caption(pb["description"])
-        for rule in pb.get("rules") or []:
-            badge = {"required": "🔴", "optional": "🟡", "bonus": "🟢"}.get(rule["rule_type"], "⚪")
-            grp   = f" ⛓ _{rule['rule_group']} (any one)_" if rule.get("rule_group") else ""
-            check = (" ✅" if met.get(str(rule["id"])) else " ⬜") if met else ""
-            st.markdown(f"{badge}{check} **{rule['name']}** — _{rule['rule_type']}_{grp}")
-            if rule.get("description"):
-                st.caption(rule["description"])
-
-
-def _journal_position(pos_id, pd_, template, p):
+def _journal_position(pos_id, pd_, template, p, between=None):
     """Journal UI for a merged position."""
     pos    = pd_["pos"]
     trades = sorted(pd_["trades"], key=lambda t: t.get("entry_time") or "")
@@ -287,8 +100,6 @@ def _journal_position(pos_id, pd_, template, p):
         or pos.get("playbook_id")
         or next((t.get("playbook_id") for t in trades if t.get("playbook_id")), None)
     )
-    rules_met = next((t.get("playbook_rules_met") for t in trades if t.get("playbook_rules_met")), None)
-    _playbook_expander(pb_id, rules_met)
 
     # Unassigned pre-trade plans
     unassigned = fetch_all(
@@ -307,43 +118,25 @@ def _journal_position(pos_id, pd_, template, p):
                     st.success("Linked!"); st.rerun()
                 st.divider()
 
-    col_pre, col_post = st.columns(2)
+    st.subheader('Pre-trade plan')
+    if pre_entry:
+        _show_pretrade_details(pre_entry)
+        if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_pos_btn_{pos_id}"):
+            st.session_state[f"pre_form_open_pos_{pos_id}"] = True
+        if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
+            _pre_trade_form_position(pos_id, entry_date, pre_entry)
+    else:
+        st.caption("No pre-trade plan recorded for this position.")
+        if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_pos_btn_{pos_id}"):
+            st.session_state[f"pre_form_open_pos_{pos_id}"] = True
+        if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
+            _pre_trade_form_position(pos_id, entry_date, None)
 
-    with col_pre:
-        st.markdown("### 📋 Pre-Trade Plan")
-        if pre_entry:
-            st.markdown(
-                f'<div style="background:{p["--bg-card"]};border:1px solid {p["--border"]};'
-                f'border-left:3px solid {p["--accent"]};border-radius:8px;padding:12px;font-size:0.85rem;">',
-                unsafe_allow_html=True,
-            )
-            if pre_entry.get("pre_analysis"):    st.markdown(f"**Analysis:**\n{pre_entry['pre_analysis']}")
-            if pre_entry.get("pre_plan"):         st.markdown(f"**Plan:**\n{pre_entry['pre_plan']}")
-            if pre_entry.get("pre_accuracy_check") and "Not answered" not in pre_entry["pre_accuracy_check"]:
-                st.markdown(f"**Accuracy check:** {pre_entry['pre_accuracy_check']}")
-            if pre_entry.get("pre_risk_type") and "Not answered" not in pre_entry["pre_risk_type"]:
-                st.markdown(f"**Risk type:** {pre_entry['pre_risk_type']}")
-            if pre_entry.get("pre_body_state"):   st.markdown(f"**Body state:** {pre_entry['pre_body_state']}")
-            if pre_entry.get("pre_psychology"):   st.markdown(f"**Mindset:**\n{pre_entry['pre_psychology']}")
-            if pre_entry.get("pre_risk_notes"):   st.markdown(f"**Risk Notes:**\n{pre_entry['pre_risk_notes']}")
-            if pre_entry.get("playbook_id"):
-                pbs = fetch_all("SELECT name FROM playbooks WHERE id=?", (pre_entry["playbook_id"],))
-                if pbs: st.markdown(f"📖 Playbook: **{pbs[0]['name']}**")
-            st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_pos_btn_{pos_id}"):
-                st.session_state[f"pre_form_open_pos_{pos_id}"] = True
-            if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
-                _pre_trade_form_position(pos_id, entry_date, pre_entry)
-        else:
-            st.caption("No pre-trade plan recorded for this position.")
-            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_pos_btn_{pos_id}"):
-                st.session_state[f"pre_form_open_pos_{pos_id}"] = True
-            if st.session_state.get(f"pre_form_open_pos_{pos_id}"):
-                _pre_trade_form_position(pos_id, entry_date, None)
+    if between:
+        between()
 
-    with col_post:
-        st.markdown("### 📝 Post-Trade Review")
-        _journal_form("trade", entry_date, post_entry, template, position_id=pos_id, playbook_id=(post_entry or {}).get("playbook_id") or pb_id, stage="post")
+    st.subheader('Post-trade review')
+    _journal_form("trade", entry_date, post_entry, template, position_id=pos_id, playbook_id=(post_entry or {}).get("playbook_id") or pb_id, stage="post")
 
 
 def _pre_trade_psych_check(key_suffix, existing_body="", existing_accuracy="", existing_risk=""):
@@ -425,28 +218,15 @@ def _pre_trade_form_position(pos_id, entry_date, existing):
         st.rerun()
 
 
-def _journal_single_trade(trade_id, raw_trades, template, p):
+def _journal_single_trade(trade_id, raw_trades, template, p, between=None):
     """Journal UI for an individual (unmerged) trade."""
     trade = next((t for t in raw_trades if t["id"] == trade_id), None)
     if not trade:
         return
 
-    pnl = float(trade.get("pnl") or 0)
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Symbol",    trade["symbol"])
-    c2.metric("Direction", trade["direction"])
-    c3.metric("Entry",     f"{trade.get('entry_price',0):.5f}" if trade.get("entry_price") else "—")
-    c4.metric("Exit",      f"{trade.get('exit_price',0):.5f}"  if trade.get("exit_price")  else "—")
-    c5.metric("P&L",       f"{pnl:+.2f}")
-
     entry_date = (trade.get("entry_time") or str(date.today()))[:10]
     pre_entry  = _get_entry("trade", entry_date, trade_id=trade_id, stage="pre")
     post_entry = _get_entry("trade", entry_date, trade_id=trade_id, stage="post")
-
-    _playbook_expander(
-        trade.get("playbook_id") or (pre_entry or {}).get("playbook_id"),
-        trade.get("playbook_rules_met"),
-    )
 
     unassigned = fetch_all(
         "SELECT * FROM journal_entries WHERE entry_type='trade' AND stage='pre' AND trade_id IS NULL AND position_id IS NULL AND (account_id IS NULL OR account_id=?) ORDER BY entry_date DESC LIMIT 20",
@@ -463,43 +243,25 @@ def _journal_single_trade(trade_id, raw_trades, template, p):
                     st.success("Linked!"); st.rerun()
                 st.divider()
 
-    col_pre, col_post = st.columns(2)
+    st.subheader('Pre-trade plan')
+    if pre_entry:
+        _show_pretrade_details(pre_entry)
+        if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_btn_{trade_id}"):
+            st.session_state[f"pre_form_open_{trade_id}"] = True
+        if st.session_state.get(f"pre_form_open_{trade_id}"):
+            _pre_trade_form_inline(trade, pre_entry)
+    else:
+        st.caption("No pre-trade plan recorded for this trade.")
+        if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_btn_{trade_id}"):
+            st.session_state[f"pre_form_open_{trade_id}"] = True
+        if st.session_state.get(f"pre_form_open_{trade_id}"):
+            _pre_trade_form_inline(trade, None)
 
-    with col_pre:
-        st.markdown("### 📋 Pre-Trade Plan")
-        if pre_entry:
-            st.markdown(
-                f'<div style="background:{p["--bg-card"]};border:1px solid {p["--border"]};'
-                f'border-left:3px solid {p["--accent"]};border-radius:8px;padding:12px;font-size:0.85rem;">',
-                unsafe_allow_html=True,
-            )
-            if pre_entry.get("pre_analysis"):    st.markdown(f"**Analysis:**\n{pre_entry['pre_analysis']}")
-            if pre_entry.get("pre_plan"):         st.markdown(f"**Plan:**\n{pre_entry['pre_plan']}")
-            if pre_entry.get("pre_accuracy_check") and "Not answered" not in pre_entry["pre_accuracy_check"]:
-                st.markdown(f"**Accuracy check:** {pre_entry['pre_accuracy_check']}")
-            if pre_entry.get("pre_risk_type") and "Not answered" not in pre_entry["pre_risk_type"]:
-                st.markdown(f"**Risk type:** {pre_entry['pre_risk_type']}")
-            if pre_entry.get("pre_body_state"):   st.markdown(f"**Body state:** {pre_entry['pre_body_state']}")
-            if pre_entry.get("pre_psychology"):   st.markdown(f"**Mindset:**\n{pre_entry['pre_psychology']}")
-            if pre_entry.get("pre_risk_notes"):   st.markdown(f"**Risk Notes:**\n{pre_entry['pre_risk_notes']}")
-            if pre_entry.get("playbook_id"):
-                pbs = fetch_all("SELECT name FROM playbooks WHERE id=?", (pre_entry["playbook_id"],))
-                if pbs: st.markdown(f"📖 Playbook: **{pbs[0]['name']}**")
-            st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("✏️ Edit Pre-Trade Plan", key=f"edit_pre_btn_{trade_id}"):
-                st.session_state[f"pre_form_open_{trade_id}"] = True
-            if st.session_state.get(f"pre_form_open_{trade_id}"):
-                _pre_trade_form_inline(trade, pre_entry)
-        else:
-            st.caption("No pre-trade plan recorded for this trade.")
-            if st.button("➕ Add Pre-Trade Plan", key=f"add_pre_btn_{trade_id}"):
-                st.session_state[f"pre_form_open_{trade_id}"] = True
-            if st.session_state.get(f"pre_form_open_{trade_id}"):
-                _pre_trade_form_inline(trade, None)
+    if between:
+        between()
 
-    with col_post:
-        st.markdown("### 📝 Post-Trade Review")
-        _journal_form("trade", entry_date, post_entry, template, trade_id=trade_id, playbook_id=(post_entry or {}).get("playbook_id") or trade.get("playbook_id"), stage="post")
+    st.subheader('Post-trade review')
+    _journal_form("trade", entry_date, post_entry, template, trade_id=trade_id, playbook_id=(post_entry or {}).get("playbook_id") or trade.get("playbook_id"), stage="post")
 
 
 def _pre_trade_form_inline(trade, existing):
@@ -545,3 +307,16 @@ def _pre_trade_form_inline(trade, existing):
         st.session_state.pop(f"pre_form_open_{trade['id']}", None)
         _flash("Pre-trade plan saved!")
         st.rerun()
+
+
+def _show_pretrade_details(entry):
+    from utils.journal_display import show_note
+    fields = [('pre_analysis', 'Analysis / setup'), ('pre_plan', 'Trade plan'),
+              ('pre_playbook_notes', 'Playbook notes'), ('pre_risk_notes', 'Risk / sizing'),
+              ('pre_accuracy_check', 'Accuracy check'), ('pre_risk_type', 'Risk type'),
+              ('pre_body_state', 'Body state'), ('pre_psychology', 'Mindset')]
+    for field, title in fields:
+        value = entry.get(field)
+        if value and 'Not answered' not in value:
+            st.markdown(f'**{title}**')
+            show_note(value)

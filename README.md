@@ -23,10 +23,13 @@ live open P&L (including dividends) and process-compliance reporting.
 - **Trades / Trade Detail** — merge trades into positions (with playbook propagation),
   partial close / full close / reopen, edit any trade (position totals auto-recompute),
   real price chart with entry/exit marked, EMA 20/50/200, daily/weekly toggle.
-  Trades also contains Trade Notes, Pre-Trade Plan and Psychology Patterns. Trade Notes
-  opens the shared Trade Detail editor for plans and reviews; Trade Detail includes
-  screenshots, management history and linked psychology reflections for any playbook.
-  Overview shows pre/post-trade screenshots side by side, with selection for multiple captures.
+  Trades has four areas: Prepare & Record, Positions, Trade Detail and Psychology Patterns.
+  Prepare & Record brings sizing, pre-trade planning, broker/manual entry and linking
+  into one workflow; sizing can fill the plan form without creating an execution.
+  Trade Detail is one page ordered from overview and playbook through planning,
+  execution/management, post-trade review and psychology. Screenshots appear once,
+  grouped by pre/during/post-trade stage. Reflections, follow-ups, reports and management
+  decisions use readable summaries instead of raw record payloads.
   Journal templates are managed under Settings → Journal Templates.
 - **Playbooks** — required/optional/bonus rules with weights, OR-groups (any-one-satisfies),
   risk thresholds with position-size multipliers
@@ -93,7 +96,7 @@ measurements, connection checks, and stopping the service.
 
 Neo trading workflows add durable screenshots, management/fill history, versioned
 candidate plans, overnight sessions, balance/risk snapshots and instrument/FX
-sizing. Use **Trades → Trade Detail → Evidence & History** to review captures and decisions.
+sizing. Use **Trades → Trade Detail → Execution & management** to review captures and decisions.
 See [NEO_MCP.md](NEO_MCP.md) for the workflow and input contracts. Existing records
 are preserved through an additive startup migration.
 

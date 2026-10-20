@@ -54,7 +54,7 @@ def _change_sizing_type():
     _reset_sizing_account()
 
 
-def _position_sizer():
+def _position_sizer(plan_to_form=False):
     from utils.position_sizing import IC_MARKETS_CONTRACTS, size_cash_risk
     from utils.accounts import get_accounts
     accounts = get_accounts()
@@ -207,11 +207,12 @@ def _position_sizer():
 
     st.divider()
     st.markdown("**📋 Pre-Trade Plan**")
-    st.caption("Saves a plan without creating a trade. Link confirmed executions later.")
+    st.caption('Copy sizing into the plan form below, then add your notes and save it there.' if plan_to_form else 'Saves a plan without creating a trade. Link confirmed executions later.')
     from utils.playbook_logic import get_playbooks
     playbooks = {"None": None} | {pb["name"]: pb["id"] for pb in get_playbooks()}
     selected_playbook = st.selectbox("Playbook", list(playbooks), key="rc_playbook")
-    if st.button("📝 Create Pre-Trade Journal Entry", type="primary", key="rc_create_plan", disabled=not symbol or quantity <= 0):
+    action = 'Use sizing in the plan below' if plan_to_form else '📝 Create Pre-Trade Journal Entry'
+    if st.button(action, type="primary", key="rc_create_plan", disabled=not symbol or quantity <= 0):
         from datetime import date
         import json
         account_text = f"Account: {account['name']}\n" if account else ""
@@ -222,6 +223,12 @@ def _position_sizer():
             "quantity_unit": unit, "contract_size": contract["contract_size"] if is_cfd else 1,
             "costs_per_unit": costs, "risk_budget": budget, "actual_risk": result["actual_risk"],
             "currency": currency, "source": contract["source"] if is_cfd else "User stock inputs"}}
+        if plan_to_form:
+            st.session_state.update(pt_symbol=symbol, pt_plan=plan, pt_risk=risk,
+                pt_account=account['name'] if account else '— None —', pt_pb=selected_playbook,
+                _prepared_sizing=assumptions, _prepared_sizing_context=(symbol.upper(), plan, risk, account['id'] if account else None))
+            st.success('Sizing copied into the pre-trade plan below. Add your analysis and save the plan there.')
+            return
         execute("""INSERT INTO journal_entries
             (entry_type,entry_date,stage,playbook_id,pre_plan,pre_risk_notes,account_id,custom_fields)
             VALUES ('trade',?,'pre',?,?,?,?,?)""", (str(date.today()), playbooks[selected_playbook], plan, risk,

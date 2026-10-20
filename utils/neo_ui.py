@@ -1,6 +1,5 @@
 """Evidence and immutable workflow history in the journal's web interface."""
 import base64
-import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -9,38 +8,45 @@ import database as db
 from journal_mcp import neo
 
 
-def show_trade_screenshots(trade):
-    """Visible before/after comparison using the same explicit links as evidence."""
+def _show_stage(captures, stage, title, prefix):
+    from utils.journal_display import date_time
+    st.markdown(f'**{title} ({len(captures)})**')
+    if not captures:
+        st.caption(f'No {title.lower()} screenshots attached yet.')
+        return
+    capture = captures[-1]
+    if len(captures) > 1:
+        by_id = {capture['id']: capture for capture in captures}
+        selected = st.selectbox(f'{title} screenshot', list(by_id), index=len(captures) - 1,
+            format_func=lambda key: f"{date_time(by_id[key]['captured_at'])} · {by_id[key]['timeframe']} · {by_id[key]['filename']}",
+            key=f"{prefix}_{stage}")
+        capture = by_id[selected]
+    metadata, content = neo.evidence_bytes(capture['id'])
+    st.image(content, use_container_width=True, caption=f"{metadata['symbol']} · {metadata['timeframe']} · {date_time(metadata['captured_at'])}")
+    st.caption(f"{metadata['filename']} · {metadata['source']}")
+    if metadata.get('chart_context'):
+        st.caption(metadata['chart_context'])
+    st.download_button('Download screenshot', content, metadata['filename'], metadata['mime_type'],
+        key=f"{prefix}_download_{metadata['id']}")
+
+
+def show_trade_screenshots(trade, evidence=None):
+    """Each screenshot appears once, grouped by its place in the trade process."""
     from utils.trade_context import history_for_trade
-    evidence = history_for_trade(trade)['evidence']
-    st.subheader('Pre / post-trade screenshots')
-    st.caption('Add or manage screenshots in Evidence & History.')
+    evidence = history_for_trade(trade)['evidence'] if evidence is None else evidence
+    st.markdown('#### Pre / post-trade screenshots')
+    prefix = f"trade_screenshot_{trade['id']}"
     for column, stage, title in zip(st.columns(2), ('pre', 'post'), ('Pre-trade', 'Post-trade')):
         with column:
-            captures = [capture for capture in evidence if capture['stage'] == stage]
-            st.markdown(f'**{title} ({len(captures)})**')
-            if not captures:
-                st.caption(f'No {title.lower()} screenshots attached yet.')
-                continue
-            capture = captures[-1]
-            if len(captures) > 1:
-                by_id = {capture['id']: capture for capture in captures}
-                selected = st.selectbox(f'{title} screenshot', list(by_id), index=len(captures) - 1,
-                    format_func=lambda key, by_id=by_id: f"#{key} · {by_id[key]['captured_at']} · {by_id[key]['timeframe']} · {by_id[key]['filename']}",
-                    key=f"trade_screenshot_{trade['id']}_{stage}")
-                capture = by_id[selected]
-            metadata, content = neo.evidence_bytes(capture['id'])
-            st.image(content, use_container_width=True, caption=f"{metadata['symbol']} · {metadata['timeframe']} · {metadata['captured_at']}")
-            st.caption(f"{metadata['filename']} · {metadata['source']}")
-            if metadata.get('chart_context'):
-                st.caption(metadata['chart_context'])
-            st.download_button('Download screenshot', content, metadata['filename'], metadata['mime_type'],
-                key=f"trade_screenshot_download_{trade['id']}_{metadata['id']}")
+            _show_stage([row for row in evidence if row['stage']==stage], stage, title, prefix)
+    management = [row for row in evidence if row['stage']=='management']
+    if management:
+        with st.expander('During-trade screenshots'):
+            _show_stage(management, 'management', 'During-trade', prefix)
 
 
 def show(account_id=None, trade=None):
     from utils.trade_context import entries_for_trade, history_for_trade
-    st.subheader("Evidence and management history")
     history = None
     if trade is not None:
         account_id = trade['account_id']
@@ -58,20 +64,23 @@ def show(account_id=None, trade=None):
                     st.warning(f"Stop and review: {session['review_reason']}")
                 if session.get('restart_decision'):
                     st.caption(f"Restart decision: {session['restart_decision']}")
-                st.json(json.loads(session['handover']))
+                from utils.journal_display import show_note
+                show_note(session['handover'])
     if not entries:
         st.info("Save a plan or review for this trade before attaching evidence.")
-        if trade is not None and st.button('Create trade notes record', key=f"evidence_create_{trade['id']}"):
+        if trade is not None and st.button('Start screenshot attachments', key=f"evidence_create_{trade['id']}"):
             from journal_mcp import records
             records.save_record('journal_entries', {'entry_type': 'trade', 'entry_date': trade['entry_time'][:10], 'stage': 'pre', 'trade_id': trade['id'], 'account_id': account_id, 'symbol': trade['symbol']})
             st.rerun()
         # Explicit trade-linked captures/events may predate a narrative record.
         if history:
-            _show_captures(history['evidence'])
+            show_trade_screenshots(trade, history['evidence'])
             _show_events(history['management_events'])
         return
     by_id = {entry['id']: entry for entry in entries}
-    entry_id = st.selectbox("Journal entry", list(by_id), format_func=lambda key: f"#{key} · {by_id[key]['entry_date']} · {by_id[key].get('symbol') or by_id[key]['entry_type']}", key=f"trade_evidence_entry_{trade['id']}" if trade is not None else 'neo_entry')
+    entry_id = list(by_id)[0]
+    if len(by_id) > 1:
+        entry_id = st.selectbox('Attach new items to', list(by_id), format_func=lambda key: f"{'Position' if by_id[key].get('position_id') else 'Trade'} {'plan' if by_id[key]['stage']=='pre' else 'review'} · {by_id[key]['entry_date']}", key=f"trade_evidence_entry_{trade['id']}" if trade is not None else 'neo_entry')
     entry = by_id[entry_id]
     candidate_id = entry.get("candidate_id")
     capture_trade_id = None
@@ -80,18 +89,22 @@ def show(account_id=None, trade=None):
         capture_trade_id = trade['id']
     if candidate_id:
         candidate = db.fetch_one("SELECT * FROM candidates WHERE id=?", (candidate_id,))
-        st.caption(f"Candidate {candidate['candidate_key']} · {candidate['status']} · plan version {candidate['plan_version']}")
+        st.caption(f"Planned setup: {candidate['symbol']} {candidate['direction'].lower()} · {candidate['status'].capitalize()}")
         with st.expander("Original plan and revisions"):
             for revision in db.fetch_all("SELECT * FROM candidate_plans WHERE candidate_id=? ORDER BY version", (candidate_id,)):
                 st.markdown(f"**Version {revision['version']} · {revision['reason']}**")
                 st.caption(f"Baseline {revision['baseline_version']} · playbook {revision.get('playbook_version') or 'unassigned'} · template {revision.get('template_version') or 'unassigned'}")
-                st.json(json.loads(revision["plan"]))
+                from utils.journal_display import show_note
+                show_note(revision['plan'])
     evidence = history["evidence"] if history else db.fetch_all("SELECT * FROM evidence WHERE journal_entry_id=? ORDER BY id", (entry_id,))
-    _show_captures(evidence)
-    with st.expander("Attach screenshot"):
+    if trade is not None:
+        show_trade_screenshots(trade, evidence)
+    else:
+        _show_captures(evidence)
+    with st.expander("Attach a screenshot"):
         with st.form(f"neo_upload_{entry_id}"):
             upload = st.file_uploader("PNG, JPEG or WebP (up to 8 MiB)", type=["png", "jpg", "jpeg", "webp"])
-            stage = st.selectbox("Evidence stage", ["pre", "management", "post"])
+            stage = st.selectbox('Screenshot stage', ['pre', 'management', 'post'], format_func=lambda key: {'pre':'Pre-trade', 'management':'During-trade', 'post':'Post-trade'}[key])
             symbol = st.text_input("Exact contract / chart symbol", value=entry.get("symbol") or (trade['symbol'] if trade is not None else ''))
             timeframe = st.text_input("Chart timeframe")
             captured_at = st.text_input("Capture time with UTC offset", value=datetime.now().astimezone().isoformat(timespec="seconds"))
@@ -117,7 +130,7 @@ def show(account_id=None, trade=None):
             decision = st.text_input("Decision")
             reason = st.text_area("Reason and observed changes")
             rule = st.text_input("Applicable rule")
-            action_status = st.selectbox("Action status", ["observed", "proposed", "executed", "cancelled"])
+            action_status = st.selectbox('Action status', ['observed', 'proposed', 'executed', 'cancelled'], format_func=str.capitalize)
             include_levels = st.checkbox("Record stop / target levels")
             before_stop = st.number_input("Previous stop", min_value=0.0)
             after_stop = st.number_input("New stop", min_value=0.0)
@@ -138,24 +151,28 @@ def show(account_id=None, trade=None):
 
 
 def _show_captures(evidence):
-    for capture in evidence:
-        with st.expander(f"{capture['stage']} · {capture['captured_at']} · {capture['symbol']} · {capture['timeframe']}"):
-            metadata, content = neo.evidence_bytes(capture["id"])
-            st.image(content, caption=f"{metadata['filename']} · {metadata['source']}")
-            st.caption(f"SHA-256: {metadata['sha256']}")
-            if metadata.get("chart_context"):
-                st.text(metadata["chart_context"])
-            st.download_button("Download image", content, metadata["filename"], metadata["mime_type"], key=f"neo_download_{metadata['id']}")
+    for stage, title in [('pre', 'Pre-trade'), ('management', 'During-trade'), ('post', 'Post-trade')]:
+        captures = [row for row in evidence if row['stage']==stage]
+        if captures:
+            _show_stage(captures, stage, title, 'journal_capture')
 
 
 def _show_events(events):
-    st.markdown("**Management timeline**")
+    from utils.journal_display import date_time
+    st.markdown('#### Management decisions')
     if not events:
-        st.caption("No management events recorded.")
+        st.caption('No management decisions recorded yet.')
     for event in events:
-        with st.expander(f"{event['observed_at']} · {event['action_status']} · {event['decision']}"):
-            st.write(event["reason"])
-            st.json({key: value for key, value in event.items() if value is not None})
+        with st.container(border=True):
+            st.markdown(f"**{event['decision']}**")
+            st.caption(f"{date_time(event['observed_at'])} · {event['action_status'].capitalize()}")
+            st.write(event['reason'])
+            if event.get('rule'):
+                st.write(f"Applicable rule: {event['rule']}")
+            for key, title in [('stop', 'Stop'), ('target', 'Target')]:
+                before, after = event.get('before_'+key), event.get('after_'+key)
+                if before is not None or after is not None:
+                    st.write(f"{title}: {before if before is not None else 'Not recorded'} → {after if after is not None else 'Not recorded'}")
 
 
 def _ensure_owner(entry, trade):

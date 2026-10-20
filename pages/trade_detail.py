@@ -8,7 +8,7 @@ import json
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from database import fetch_all, fetch_one
+from database import fetch_all
 from utils.trade_ops import (
     get_trade, get_trades, update_trade_playbook, delete_trade,
     close_trade, partial_close_trade, reopen_trade
@@ -81,41 +81,30 @@ def show(embedded=False):
     _trade_header(trade)
     st.divider()
 
-    tab_overview, tab_manage, tab_playbook, tab_journal, tab_evidence, tab_psychology, tab_related = st.tabs([
-        "📊 Overview", "🛠️ Manage", "📖 Playbook", "📔 Plan & Review", "📷 Evidence & History", "🧠 Psychology", "🔗 Related"
-    ])
-    section = st.session_state.pop('_detail_section', None)
-    if section:
-        import streamlit.components.v1 as components
-        components.html(f"""<script>setTimeout(function(){{
-            var tabs=window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-            for (var tab of tabs) if(tab.textContent.trim()==={json.dumps(section)}) {{tab.click();break;}}
-        }},120);</script>""", height=0)
-
-    with tab_overview:
-        from utils.neo_ui import show_trade_screenshots
-        show_trade_screenshots(trade)
-        _trade_overview(trade)
-
-    with tab_manage:
-        _trade_manage(trade)
-
-    with tab_playbook:
-        _trade_playbook(trade)
-
-    with tab_journal:
-        _trade_journal_tab(trade)
-
-    with tab_evidence:
-        from utils.neo_ui import show as show_evidence
-        show_evidence(trade=trade)
-
-    with tab_psychology:
-        from utils.pattern_ui import show as show_patterns
-        show_patterns(trade=trade)
-
-    with tab_related:
+    st.session_state.pop('_detail_section', None)
+    st.subheader('Trade overview')
+    _trade_overview(trade)
+    st.divider()
+    st.subheader('Setup & playbook')
+    _trade_playbook(trade)
+    st.divider()
+    from utils.trade_review_ui import show_review
+    show_review(trade, between=lambda: _execution_section(trade))
+    st.divider()
+    from utils.pattern_ui import show as show_patterns
+    show_patterns(trade=trade)
+    with st.expander('Related trades'):
         _trade_related(trade)
+
+
+def _execution_section(trade):
+    st.divider()
+    st.subheader('Execution & management')
+    from utils.neo_ui import show as show_evidence
+    show_evidence(trade=trade)
+    with st.expander('Edit execution or manage the position'):
+        _trade_manage(trade)
+    st.divider()
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -232,9 +221,13 @@ def _trade_overview(trade):
         ("Exit Time",    (trade.get("exit_time") or "Open")[:16]),
         ("Duration",     dur_str),
     ]
-    info_df = pd.DataFrame(rows, columns=["Metric", "Value"])
-    st.dataframe(info_df, use_container_width=True, hide_index=True,
-                 height=38 * len(rows) + 40)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Entry', f'{entry:.4f}' if entry else '—')
+    c2.metric('Exit', f'{exit_:.4f}' if exit_ else 'Open')
+    c3.metric('Quantity', f'{qty:g}')
+    c4.metric('Duration', dur_str)
+    with st.expander('Prices, costs & timestamps'):
+        st.dataframe(pd.DataFrame(rows, columns=['Metric', 'Value']), use_container_width=True, hide_index=True)
 
     # Risk score
     if trade.get("risk_score") is not None:
@@ -253,8 +246,8 @@ def _trade_overview(trade):
             </div>""", unsafe_allow_html=True)
 
     # ── Real price chart with entry/exit marked ──────────────────────────────
-    st.divider()
-    _real_price_chart(trade, entry, exit_)
+    with st.expander('Price chart'):
+        _real_price_chart(trade, entry, exit_)
 
 
 def _real_price_chart(trade, entry, exit_):
@@ -581,20 +574,13 @@ def _trade_playbook(trade):
         st.markdown(f"**Risk Level:** {risk_icons.get(rl,'⚪')} {rl.upper()}  |  **Size Multiplier:** {live.get('risk_multiplier',1.0)}x")
 
 
-# ── Journal Tab ───────────────────────────────────────────────────────────────
-
-def _trade_journal_tab(trade):
-    from utils.trade_review_ui import show_review
-    show_review(trade)
-
-
 # ── Related Trades Tab ────────────────────────────────────────────────────────
 
 def _trade_related(trade):
     st.markdown("**Other trades on the same symbol:**")
     related = fetch_all(
-        "SELECT * FROM trades WHERE symbol=? AND id!=? ORDER BY entry_time DESC LIMIT 20",
-        (trade["symbol"], trade["id"])
+        "SELECT * FROM trades WHERE symbol=? AND id!=? AND account_id IS ? ORDER BY entry_time DESC LIMIT 20",
+        (trade["symbol"], trade["id"], trade.get('account_id'))
     )
     if not related:
         st.caption(f"No other trades on {trade['symbol']}.")

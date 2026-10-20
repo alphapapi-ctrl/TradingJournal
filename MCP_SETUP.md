@@ -219,11 +219,13 @@ The server advertises 38 tools with descriptions and input schemas (schema/capab
 See [PATTERN_MCP.md](PATTERN_MCP.md) for typed contracts, audit/conflict behaviour,
 pending-work retrieval, direct pattern screenshot ownership and migration dry runs.
 Trades → **Psychology Patterns** displays account reflections, follow-ups and reports.
-Trade Detail → **Psychology** shows reflections linked to the selected trade.
+The **Psychology patterns** section of Trade Detail shows linked reflections as
+readable notes with follow-up history. Pattern reports show counts and classified rates.
 
 See [NEO_MCP.md](NEO_MCP.md) for the full Neo workflow, input fields, scoring
 examples and remaining real-account integration checks. Trades → **Trade Detail →
-Evidence & History** displays linked screenshots, plan revisions, handovers and management history.
+Execution & management** displays linked screenshots and readable management decisions.
+Optional expanders retain recorded plan revisions and session handovers.
 
 Record editing covers accounts, trades, daily/weekly/trade journal entries,
 all pre/post analysis and psychology fields, grades and categories, templates,

@@ -266,7 +266,8 @@ class NeoCase(unittest.TestCase):
         from streamlit.testing.v1 import AppTest
         app = AppTest.from_string("from utils.neo_ui import show\nshow()").run(timeout=15)
         self.assertFalse(app.exception, str(app.exception))
-        self.assertTrue(any("observed" in expander.label for expander in app.expander))
+        self.assertTrue(any("Observed" in item.value for item in app.caption))
+        self.assertFalse(app.get("json"))
         self.assertTrue(app.get("imgs"))
 
     def test_two_writers_cannot_overwrite_same_revision(self):

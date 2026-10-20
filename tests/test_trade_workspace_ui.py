@@ -96,17 +96,86 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
     trades.show()
 """)
         labels = [tab.label for tab in app.tabs]
-        for expected in ['📊 Trade Notes', '📋 Pre-Trade Plan', 'Psychology Patterns', '📷 Evidence & History', '🧠 Psychology']:
+        self.assertNotIn('📊 Trade Notes', labels)
+        for expected in ['Prepare & Record', '🧩 Positions', '🔍 Trade Detail', 'Psychology Patterns']:
             self.assertIn(expected, labels)
         app.selectbox(key='trades_review_account_patterns').select(self.account).run()
         self.assertFalse(app.exception, str(app.exception))
         self.assertEqual(sum(area.label == 'Situation' for area in app.text_area), 2)
 
+    def test_detail_process_is_one_page_with_readable_reflections_and_history(self):
+        entry = self.entry(pre_plan=json.dumps({'entry_price': 100, 'stop_price': 98, 'checklist': {'location': 'Confirmed'}}))
+        for stage in ('pre', 'management', 'post'):
+            self.capture(entry, stage=stage)
+        neo.append_management_event({'event_key': 'readable', 'journal_entry_id': entry['id'], 'observed_at': NOW,
+            'decision': 'Keep the original stop', 'reason': 'Structure is intact', 'action_status': 'observed',
+            'before_stop': 98, 'after_stop': 98, 'rule': 'Respect invalidation'})
+        reflection = self.reflection('readable reflection', trade_ids=[self.trade['id']],
+            emotion_body_state='Shoulders relaxed', better_response='Wait for the next trigger', urge_response='resisted',
+            plan_adherence='followed', rule_breach='no', field_provenance={'emotion_body_state': {'kind': 'user_report'}})
+        patterns.append_pattern_followup({'pattern_entry_id': reflection['id'], 'followup_key': 'practised',
+            'note': 'Practised the pause', 'response_practised': True, 'response_helpful': True,
+            'observed_at': NOW}, 'readable-followup')
+        app = self.detail()
+        self.assertFalse(app.tabs)
+        self.assertFalse(app.get('json'))
+        headings = [item.value for item in app.subheader]
+        expected = ['Trade overview', 'Setup & playbook', 'Pre-trade plan', 'Execution & management', 'Post-trade review', 'Psychology patterns']
+        self.assertEqual([title for title in headings if title in expected], expected)
+        prose = '\n'.join(item.value for item in app.markdown)
+        for value in ['Entry price: 100', 'Location: Confirmed', 'Keep the original stop', 'Structure is intact',
+            'Respect invalidation', 'Shoulders relaxed', 'Wait for the next trigger', 'Practised the pause', 'Resisted the urge']:
+            self.assertIn(value, prose)
+        self.assertNotIn('field_provenance', prose)
+        self.assertEqual(len(app.get('imgs')), 3)
+
+    def test_pattern_report_is_readable_and_keeps_unknowns_out_of_rates(self):
+        definition = patterns.save_psychology_pattern({'pattern_key': 'pause', 'label': 'Pause after a missed move',
+            'practice_response': 'Take one breath'}, 'pause-definition')
+        for key, urge in [('one','resisted'), ('two','acted_on'), ('three','unknown')]:
+            self.reflection(key, pattern_id=definition['id'], urge_response=urge)
+        app = self.app(f'from utils.pattern_ui import show\nshow({self.account})')
+        next(button for button in app.button if button.label == 'Generate pattern report').click().run()
+        self.assertFalse(app.exception, str(app.exception))
+        self.assertFalse(app.get('json'))
+        prose = '\n'.join(item.value for item in app.markdown)
+        self.assertIn('Urges resisted: 1 of 2 classified occurrences (50%)', prose)
+        self.assertEqual(next(item.value for item in app.metric if item.label == 'Logged occurrences'), '3')
+        self.assertEqual(db.fetch_one('SELECT COUNT(*) n FROM pattern_entries')['n'], 3)
+
+    def test_preparation_copies_sizing_into_one_plan_without_recording_a_fill(self):
+        app = self.app('from pages.trades import _prepare_and_record\n_prepare_and_record()')
+        app.selectbox(key='rc_asset_type').select('CFD').run()
+        app.number_input(key='rc_balance').set_value(10000)
+        app.number_input(key='rc_entry').set_value(3000)
+        app.number_input(key='rc_stop').set_value(2997)
+        app.run()
+        app.button(key='rc_create_plan').click().run()
+        self.assertFalse(app.exception, str(app.exception))
+        self.assertIn('0.33 lots', app.text_area(key='pt_plan').value)
+        self.assertEqual(db.fetch_one('SELECT COUNT(*) n FROM journal_entries')['n'], 0)
+        app.text_area(key='pt_analysis').set_value('Wait for a confirmed setup')
+        next(button for button in app.button if button.label == '💾 Save Pre-Trade Plan').click().run()
+        self.assertFalse(app.exception, str(app.exception))
+        entry = db.fetch_one('SELECT * FROM journal_entries')
+        self.assertEqual(entry['symbol'], 'XAUUSD.A')
+        self.assertEqual(json.loads(entry['custom_fields'])['position_sizing']['quantity'], 0.33)
+        self.assertEqual(db.fetch_one('SELECT COUNT(*) n FROM journal_entries')['n'], 1)
+        self.assertEqual(db.fetch_one('SELECT COUNT(*) n FROM trades')['n'], 1)
+        app.button(key='rc_create_plan').click().run()
+        app.text_input(key='pt_symbol').set_value('DIFFERENT')
+        next(button for button in app.button if button.label == '💾 Save Pre-Trade Plan').click().run()
+        self.assertFalse(app.exception, str(app.exception))
+        changed = db.fetch_one('SELECT * FROM journal_entries ORDER BY id DESC LIMIT 1')
+        self.assertEqual(changed['symbol'], 'DIFFERENT')
+        self.assertIsNone(changed['custom_fields'], 'A changed symbol must not retain another contract’s sizing assumptions')
+
     def test_stock_playbook_review_reuses_plan_and_keeps_pre_fields_and_metadata(self):
         entry = self.entry()
         self.capture(entry)
         app = self.detail()
-        self.assertTrue(any(tab.label == '📷 Evidence & History' for tab in app.tabs))
+        self.assertFalse(app.tabs)
+        self.assertFalse(app.get('json'))
         key = f"trade_2026-10-18_post_{self.trade['id']}_None"
         app.text_area(key='analysis_' + key).set_value('Swing review')
         app.text_area(key='psych_' + key).set_value('Calm and followed the plan')
@@ -116,15 +185,14 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertEqual((saved['analysis'], saved['pre_plan'], saved['playbook_id']), ('Swing review', 'Original swing plan', self.playbook))
         self.assertEqual(json.loads(saved['custom_fields']), {'preserve': 'metadata'})
         self.assertEqual(db.fetch_one("SELECT COUNT(*) n FROM journal_entries WHERE entry_type='trade'")['n'], 1)
-        self.assertEqual(len(app.tabs[0].get('imgs')), 1)
-        self.assertEqual(len(app.tabs[4].get('imgs')), 1)
+        self.assertEqual(len(app.get('imgs')), 1)
         plans = self.app(f'from utils.planning_ui import show_plans\nshow_plans({self.account})')
         self.assertIn(f"open_plan_{entry['id']}", [button.key for button in plans.button])
 
     def test_direct_preplan_edit_and_new_review_inherit_account(self):
         app = self.detail()
-        self.assertTrue(any(item.value == 'No pre-trade screenshots attached yet.' for item in app.tabs[0].caption))
-        self.assertTrue(any(item.value == 'No post-trade screenshots attached yet.' for item in app.tabs[0].caption))
+        self.assertTrue(any(item.value == 'No pre-trade screenshots attached yet.' for item in app.caption))
+        self.assertTrue(any(item.value == 'No post-trade screenshots attached yet.' for item in app.caption))
         app.button(key=f"add_pre_btn_{self.trade['id']}").click().run()
         app.text_area(key=f"i_plan_{self.trade['id']}").set_value('New plan')
         app.button(key=f"save_pre_{self.trade['id']}").click().run()
@@ -206,8 +274,7 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertEqual(saved['analysis'], 'Native review')
         self.assertEqual(db.fetch_all('SELECT * FROM candidate_plans'), versions)
         self.assertEqual(len(entries_for_trade(self.trade)), 1)
-        queue = self.app(f'from utils.trade_review_ui import show_notes\nshow_notes({self.account})')
-        self.assertTrue(any('1/1' in item.value for item in queue.markdown))
+        self.assertEqual(len(entries_for_trade(self.trade)), 1)
         self.assertEqual(len(patterns_for_trade(self.trade)), 1)
 
     def test_merged_position_review_uses_shared_record_including_legacy_owner(self):
@@ -245,8 +312,7 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         self.assertEqual([row['id'] for row in patterns_for_trade(self.trade)], [linked['id']])
         app = self.detail()
         self.assertEqual(app.selectbox(key=f"trade_pattern_{self.trade['id']}_selected").options[0].split(' · ')[0], f"#{linked['id']}")
-        self.assertEqual(len(app.tabs[0].get('imgs')), 1)
-        self.assertEqual(len(app.tabs[4].get('imgs')), 1)
+        self.assertEqual(len(app.get('imgs')), 1)
 
     def test_overview_screenshots_compare_pre_post_and_select_multiple_captures(self):
         entry = self.entry()
@@ -257,26 +323,26 @@ with patch.object(trade_detail, '_price_history_for', return_value=(None,None)),
         management = self.capture(entry, filename='management.png', stage='management')
         unrelated = self.capture(self.entry(trade_id=self.new_trade()['id']), filename='unrelated.png')
         app = self.detail()
-        overview = app.tabs[0]
-        self.assertEqual(len(overview.get('imgs')), 2)
+        overview = app
+        self.assertEqual(len(overview.get('imgs')), 3)
         self.assertTrue(any(item.value == '**Pre-trade (2)**' for item in overview.markdown))
         self.assertTrue(any(item.value == '**Post-trade (2)**' for item in overview.markdown))
         selector = app.selectbox(key=f"trade_screenshot_{self.trade['id']}_pre")
         self.assertEqual(selector.value, latest['id'])
         self.assertEqual(len(selector.options), 2)
-        self.assertEqual(len(overview.get('download_button')), 2)
+        self.assertEqual(len(overview.get('download_button')), 3)
         captions = '\n'.join(item.value for item in overview.caption)
         self.assertIn('before-latest.png', captions)
         self.assertIn('after-latest.png', captions)
-        self.assertNotIn(management['filename'], captions)
+        self.assertEqual(captions.count(management['filename']), 1)
         self.assertNotIn(unrelated['filename'], captions)
         selector.select(first['id']).run()
         self.assertFalse(app.exception, str(app.exception))
-        self.assertTrue(any('before-first.png' in item.value for item in app.tabs[0].caption))
+        self.assertTrue(any('before-first.png' in item.value for item in app.caption))
         self.assertEqual(app.selectbox(key=f"trade_screenshot_{self.trade['id']}_post").value, post_latest['id'])
         app.selectbox(key=f"trade_screenshot_{self.trade['id']}_post").select(post['id']).run()
         self.assertFalse(app.exception, str(app.exception))
-        self.assertTrue(any('after.png' in item.value for item in app.tabs[0].caption))
+        self.assertTrue(any('after.png' in item.value for item in app.caption))
         self.assertEqual(app.selectbox(key=f"trade_screenshot_{self.trade['id']}_pre").value, first['id'])
 
     def test_screenshots_render_when_streamlit_rejects_removed_image_option(self):
@@ -294,8 +360,7 @@ def current_image(image, caption=None, *, use_container_width=None):
 with patch.object(st, 'image', current_image), patch.object(trade_detail, '_price_history_for', return_value=(None,None)):
     trade_detail.show(embedded=True)
 """)
-        self.assertEqual(len(app.tabs[0].get('imgs')), 2)
-        self.assertEqual(len(app.tabs[4].get('imgs')), 2)
+        self.assertEqual(len(app.get('imgs')), 2)
 
     def test_trade_reflection_creation_and_shared_position_event(self):
         second = self.new_trade()

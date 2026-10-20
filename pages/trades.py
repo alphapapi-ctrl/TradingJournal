@@ -33,35 +33,44 @@ def show():
     st.header("📋 Trades")
     if st.session_state.get('_journal_flash'):
         st.toast(st.session_state.pop('_journal_flash'), icon='✅')
-    tab_calc, tab_add, tab_list, tab_positions, tab_detail, tab_notes, tab_plans, tab_patterns = st.tabs([
-        "⚖️ Risk Calculator", "➕ Add Trade", "🔗 Link Trade", "🧩 Positions", "🔍 Trade Detail",
-        "📊 Trade Notes", "📋 Pre-Trade Plan", "Psychology Patterns"
+    tab_prepare, tab_positions, tab_detail, tab_patterns = st.tabs([
+        "Prepare & Record", "🧩 Positions", "🔍 Trade Detail", "Psychology Patterns"
     ])
 
-    # Tab indices: 0=Risk Calc, 1=Add Trade, 2=Link Trade, 3=Positions, 4=Trade Detail
+    # Named destinations keep shortcuts independent of the visible tab order.
     if "_trades_pending_tab" in st.session_state:
-        _js_switch_tab(st.session_state.pop("_trades_pending_tab"))
+        destination = st.session_state.pop('_trades_pending_tab')
+        destinations = {'prepare': 0, 'positions': 1, 'detail': 2, 'patterns': 3,
+                        0: 0, 1: 0, 2: 0, 3: 1, 4: 2, 5: 2, 6: 0, 7: 3}
+        _js_switch_tab(destinations.get(destination, 0))
 
-    with tab_calc:
-        from pages.risk_calculator import show as rc_show
-        rc_show(embedded=True)
-    with tab_add:
-        from pages.import_trades import show as it_show
-        it_show(embedded=True)
-    with tab_list:      _show_trades()
+    with tab_prepare:
+        _prepare_and_record()
     with tab_positions: _show_positions()
     with tab_detail:
         from pages.trade_detail import show as td_show
         td_show(embedded=True)
-    with tab_notes:
-        from utils.trade_review_ui import show_notes
-        show_notes(_review_account('notes'))
-    with tab_plans:
-        from utils.planning_ui import show_plans
-        show_plans(_review_account('plans'))
     with tab_patterns:
         from utils.pattern_ui import show as show_patterns
         show_patterns(_review_account('patterns'))
+
+
+def _prepare_and_record():
+    st.subheader('Prepare & record a trade')
+    st.caption('Define the setup, size the risk, record the execution, then connect the plan and playbook.')
+    with st.expander('1. Calculate position size', expanded=True):
+        from pages.risk_calculator import _position_sizer, _kelly_criterion
+        _position_sizer(plan_to_form=True)
+        with st.expander('Kelly criterion from measured results'):
+            _kelly_criterion()
+    with st.expander('2. Write or link a pre-trade plan', expanded=True):
+        from utils.planning_ui import show_plans
+        show_plans(_review_account('plans'))
+    with st.expander('3. Add or import the execution'):
+        from pages.import_trades import show as show_import
+        show_import(embedded=True)
+    with st.expander('4. Link executions & assess playbooks'):
+        _show_trades()
 
 
 def _review_account(section):

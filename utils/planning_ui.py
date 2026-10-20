@@ -1,5 +1,6 @@
 """Unassigned trade plans and journal template administration."""
 import streamlit as st
+import json
 from datetime import date
 from database import fetch_all, execute
 from utils.trade_ops import get_templates, save_template, delete_journal_entry
@@ -62,12 +63,15 @@ def _new_pretrade_plan(account_id=None):
                                        placeholder="Planned risk %, lot size rationale, any special considerations...")
 
     if st.button("💾 Save Pre-Trade Plan", type="primary"):
+        sizing = st.session_state.get('_prepared_sizing') if st.session_state.get('_prepared_sizing_context') == (plan_symbol, pre_plan, pre_risk_notes, plan_acc_id) else None
         execute("""INSERT INTO journal_entries
                    (entry_type, entry_date, stage, playbook_id,
-                    pre_analysis, pre_plan, pre_psychology, pre_risk_notes, account_id, symbol)
-                   VALUES ('trade',?,'pre',?,?,?,?,?,?,?)""",
+                    pre_analysis, pre_plan, pre_psychology, pre_risk_notes, account_id, symbol, custom_fields)
+                   VALUES ('trade',?,'pre',?,?,?,?,?,?,?,?)""",
                 (str(plan_date), pb_id, pre_analysis, pre_plan, pre_psychology, pre_risk_notes,
-                 plan_acc_id, plan_symbol or None))
+                 plan_acc_id, plan_symbol or None, json.dumps(sizing) if sizing else None))
+        st.session_state.pop('_prepared_sizing', None)
+        st.session_state.pop('_prepared_sizing_context', None)
         _flash("Pre-trade plan saved! Come back after the trade to link it and write your post-trade review.")
         st.rerun()
 

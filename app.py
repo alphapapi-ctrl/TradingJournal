@@ -126,14 +126,14 @@ if page == "dashboard":
 elif page == "import_trades":
     # Consolidated into the Trades page (Add Trade tab)
     st.session_state["page"] = "trades"
-    st.session_state["_trades_pending_tab"] = 1
+    st.session_state["_trades_pending_tab"] = 'prepare'
     from pages.trades import show; show()
 elif page == "trades":
     from pages.trades import show; show()
 elif page == "trade_detail":
     # Consolidated into the Trades page (Trade Detail tab)
     st.session_state["page"] = "trades"
-    st.session_state["_trades_pending_tab"] = 4
+    st.session_state["_trades_pending_tab"] = 'detail'
     from pages.trades import show; show()
 elif page == "stock_analysis":
     from pages.stock_analysis import show; show()

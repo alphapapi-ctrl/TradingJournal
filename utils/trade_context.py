@@ -68,7 +68,7 @@ def history_for_trade(trade, entries=None):
 def open_trade_detail(trade_id, account_id=None, section='📔 Plan & Review', position_scope=False):
     import streamlit as st
     st.session_state.update(page='trades', detail_trade_id=trade_id,
-        _trades_pending_tab=4, _detail_section=section,
+        _trades_pending_tab='detail', _detail_section=section,
         _detail_scope='Merged position' if position_scope else 'This trade')
     if account_id is not None:
         st.session_state['detail_account_id'] = account_id

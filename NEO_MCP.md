@@ -160,18 +160,20 @@ four-state interface for incomplete evidence.
 
 ## Evidence access and the web interface
 
-Trades → **Trade Detail → Evidence & History** displays linked sessions/handovers, original and revised
-plans, images and the immutable management timeline. It can attach screenshots
+Trades → **Trade Detail** follows the process on one page: overview, setup/playbook,
+pre-trade plan, execution/management, post-trade review and psychology. The execution
+section displays linked images and management decisions, with optional session
+context and recorded plan revisions. It can attach screenshots
 and record decisions. Images are validated PNG/JPEG/WebP, up to 8 MiB and 40 MP;
 their SHA-256 hash and context accompany the stored bytes.
 
 This workspace supports all playbooks. It resolves explicit trade, shared position
 and confirmed candidate-fill links; it does not match unrelated entries by symbol
-or date. Trade Detail → **Plan & Review** is the shared editor for pre-trade plans
-and post-trade notes. The **Trade Notes** tab provides review coverage and shortcuts
-to that editor. Existing narrative fields and immutable plan revisions are retained.
-Trade Detail → **Overview** also shows pre/post-trade screenshots side by side;
-when a stage has several captures, select which one to compare or download.
+or date. Plans and reviews share the Trade Detail workspace; the redundant Trade Notes
+tab has been removed. Existing narrative fields and immutable plan revisions are retained.
+Pre/post-trade screenshots are shown side by side once, with during-trade captures
+in a separate group. When a stage has several captures, select one to compare or download.
+Management decisions and psychology reflections are presented as readable notes.
 
 `read_evidence` returns base64 chunks and an expiring bearer-capability
 `download_path`. Resolve the path against the configured journal server. An HTTP
