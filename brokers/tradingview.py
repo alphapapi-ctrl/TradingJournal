@@ -16,6 +16,9 @@ import csv
 import io
 import json
 import re
+import math
+import hashlib
+from decimal import Decimal
 from collections import defaultdict, deque
 
 
@@ -76,6 +79,20 @@ def _parse_time(raw: str) -> str | None:
         return str(raw).strip() or None
 
 
+def _js_number(value):
+    """ECMAScript's ordinary decimal/scientific formatting for source cash IDs."""
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("Dividend amount must be finite")
+    if value == 0:
+        return "0"
+    shortest = repr(value)
+    if 1e-6 <= abs(value) < 1e21:
+        return format(Decimal(shortest), "f").rstrip("0").rstrip(".") if "." in format(Decimal(shortest), "f") else format(Decimal(shortest), "f")
+    mantissa, exponent = shortest.lower().split("e")
+    return mantissa.removesuffix(".0") + "e" + ("+" if int(exponent) >= 0 else "-") + str(abs(int(exponent)))
+
+
 def parse_tradingview_csv(file_content: bytes) -> list[dict]:
     """
     Parse a TradingView paper-trading transactions CSV.
@@ -83,7 +100,8 @@ def parse_tradingview_csv(file_content: bytes) -> list[dict]:
     """
     text = file_content.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
-    rows = [r for r in reader if any(c.strip() for c in r)]
+    located = [(reader.line_num, r) for r in reader if any(c.strip() for c in r)]
+    rows = [r for _, r in located]
     if not rows:
         raise ValueError("Empty TradingView CSV")
 
@@ -105,21 +123,42 @@ def parse_tradingview_csv(file_content: bytes) -> list[dict]:
         )
 
     # ── Collect fills ─────────────────────────────────────────────────────────
-    fills = []
-    for row in rows[1:]:
+    fills, dividends = [], []
+    occurrences = defaultdict(int)
+    source_hash = hashlib.sha256(file_content).hexdigest()
+    for line, row in located[1:]:
         if len(row) <= max(i_symbol, i_side):
             continue
         status = row[i_status].strip().lower() if (i_status is not None and i_status < len(row)) else "filled"
-        # Only count executed orders
-        if status and status not in ("filled", "executed", "done", ""):
-            continue
 
         sym_raw = row[i_symbol]
         side    = row[i_side].strip().lower()
+        if side == "dividend":
+            literal_time = row[i_time].strip() if i_time is not None and i_time < len(row) else ""
+            amount = _safe_float(row[i_qty], default=float("nan")) if i_qty is not None and i_qty < len(row) else float("nan")
+            if not literal_time or not math.isfinite(amount) or not amount:
+                raise ValueError(f"Dividend row {line} requires a payment date and finite nonzero cash amount in Qty")
+            payment = _parse_time(literal_time)
+            from datetime import datetime
+            datetime.fromisoformat(payment)
+            identity = (sym_raw.strip(), literal_time.replace(" ", "T"), _js_number(amount))
+            occurrences[identity] += 1
+            source = {"sha256": source_hash, "line": line, "row": dict(zip(headers, row)),
+                      "amount_original": amount, "occurrence": occurrences[identity]}
+            dividends.append({"broker": "TradingView", "broker_trade_id": "TV_DIV_" + "_".join(identity) + f"_{occurrences[identity]}",
+                              "symbol": _clean_symbol(sym_raw), "direction": "LONG", "trade_type": "dividend",
+                              "entry_price": 0, "exit_price": 0, "quantity": 0, "entry_time": payment, "exit_time": payment,
+                              "pnl": amount, "commission": 0, "swap": 0, "status": "closed",
+                              "raw_data": json.dumps({"exchange": _exchange_of(sym_raw), "dividend_source": source})})
+            continue
         if side not in ("buy", "sell"):
+            continue
+        if status and status not in ("filled", "executed", "done", ""):
             continue
         qty   = abs(_safe_float(row[i_qty]))   if (i_qty   is not None and i_qty   < len(row)) else 0
         price = _safe_float(row[i_price])      if (i_price is not None and i_price < len(row)) else 0
+        if not math.isfinite(qty) or not math.isfinite(price):
+            raise ValueError(f"Fill row {line} requires finite quantity and price")
         if qty <= 0 or price <= 0:
             continue
 
@@ -135,8 +174,8 @@ def parse_tradingview_csv(file_content: bytes) -> list[dict]:
             "raw":      json.dumps(row, default=str),
         })
 
-    if not fills:
-        raise ValueError("No filled buy/sell orders found in TradingView CSV")
+    if not fills and not dividends:
+        raise ValueError("No filled buy/sell orders or dividend payments found in TradingView CSV")
 
     # TradingView exports newest-first. Detect ordering so that fills sharing the
     # same timestamp (e.g. a buy and sell in the same minute) keep true sequence
@@ -196,11 +235,13 @@ def parse_tradingview_csv(file_content: bytes) -> list[dict]:
                 "entry_time":      matched[0]["time"],
                 "exit_time":       closing_fill["time"],
                 "quantity":        tq,
-                "pnl":             round(pnl - open_comm - close_comm, 4),
+                "pnl":             round(pnl, 4),  # Gross; reports deduct commissions once.
                 "commission":      round(open_comm + close_comm, 4),
                 "swap":            0.0,
                 "status":          "closed",
-                "raw_data":        json.dumps({"exchange": exchange, "close": closing_fill["order_id"]}),
+                "raw_data":        json.dumps({"exchange": exchange, "close": closing_fill["order_id"],
+                                               "quote_costs": {"entry": open_comm, "exit": close_comm},
+                                               "quote_entry_lots": [{"quantity": m["qty"], "price": m["price"], "entry_time": m["time"], "commission": m["comm"]} for m in matched]}),
             })
             return remaining
 
@@ -223,7 +264,7 @@ def parse_tradingview_csv(file_content: bytes) -> list[dict]:
         for lot in short_lots:
             trades.append(_open_trade(symbol, exchange, lot, "SHORT"))
 
-    return trades
+    return trades + dividends
 
 
 def _open_trade(symbol, exchange, lot, direction):

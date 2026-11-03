@@ -20,7 +20,7 @@ ENTITIES = (
     "replay_sessions", "import_history", "day_features", *TABLES, *PATTERN_TABLES,
 )
 READ_ONLY = {"import_history", "day_features", *TABLES, *PATTERN_TABLES}
-JSON_FIELDS = {"raw_data", "playbook_rules_met", "custom_fields", "pending_orders", "sizing_assumptions"}
+JSON_FIELDS = {"raw_data", "playbook_rules_met", "custom_fields", "pending_orders", "sizing_assumptions", "fx_metadata"}
 REFERENCES = {
     "account_id": "accounts", "trade_id": "trades", "position_id": "positions",
     "playbook_id": "playbooks", "trigger_rule_id": "playbook_rules",
@@ -94,7 +94,7 @@ def schema(entity: str | None = None) -> dict:
     for name, contract in schema_contracts().items():
         if name in result:
             result[name]["contract"] = contract
-    return {"schema_version": SCHEMA_VERSION, "capabilities": {"native_patterns": True, "pattern_reports": True, "pattern_evidence_owner": True, "legacy_pattern_migration": True, "contract_size_sizing": True}, "entities": result, "notes": [
+    return {"schema_version": SCHEMA_VERSION, "capabilities": {"native_patterns": True, "pattern_reports": True, "pattern_evidence_owner": True, "legacy_pattern_migration": True, "contract_size_sizing": True, "dividend_cashflows": True, "dated_fx": True, "test_record_filter": True}, "entities": result, "notes": [
         "IDs refer to this journal database; inspect existing accounts before creating trades.",
         "Use trade_action for close/partial_close/reopen and position_action to merge/unmerge trades.",
         "Use assign_playbook to store rule checks and calculated risk scores.",
@@ -104,7 +104,7 @@ def schema(entity: str | None = None) -> dict:
         "Neo entities use dedicated workflow tools; list_records/get_record read their history. candidate_plans, events, evidence, snapshots and instrument specs are append-only.",
         "Playbook thresholds are minimum guards: their consequence applies on failure. Passing all minima defaults to normal / multiplier 1. A score is checklist composition, never probability or a risk-percentage recommendation.",
         "JSON fields accept objects/arrays; raw_data also accepts plain notes text.",
-        "Amounts use the account currency. No FX conversion is performed.",
+        "P&L and costs use account currency; quote_currency identifies prices. fx_metadata records dated entry/exit/payment account_per_quote rates, source, rate_date, field and approximate status. TradingView cross-currency imports require supplied dated FX. is_test excludes a record from real performance by default, as do DUMMY broker/IDs.",
         "CFD sizing_method=contract_size derives point_value from contract_multiplier; tick_size/tick_value may be omitted. Cash sizing uses exact price distance, lot step/minimum and optional maximum. Known tick pairs still validate prices; unknown ticks do not create a sizing blocker.",
         "These tools manage journal records only; they do not send orders to MT5 or brokers.",
     ]}
@@ -191,6 +191,11 @@ def _validate(entity: str, patch: dict, old: dict | None = None) -> dict:
     if unknown:
         raise ValueError(f"Unknown or calculated fields: {', '.join(sorted(unknown))}. Use journal_schema.")
     data = dict(patch)
+    from utils.cashflows import currency_code
+    if entity == "accounts" and data.get("currency") is not None:
+        data["currency"] = currency_code(data["currency"])
+    if entity == "trades" and data.get("quote_currency") is not None:
+        data["quote_currency"] = currency_code(data["quote_currency"])
     for key, value in data.items():
         if value is None:
             if fields[key]["notnull"]:
@@ -249,6 +254,14 @@ def _validate(entity: str, patch: dict, old: dict | None = None) -> dict:
         if full.get("status") not in ("open", "closed"):
             raise ValueError("Trade status must be open or closed")
         dividend = full.get("trade_type") == "dividend"
+        from utils.cashflows import validate_money
+        validate_money(full, get_record("accounts", full["account_id"])["currency"] if full.get("account_id") else "UNASSIGNED")
+        if old and full.get("status") == "closed" and set(data) & {"quote_currency", "fx_metadata"} and "pnl" not in data:
+            from utils.cashflows import object_value
+            if full.get("quote_currency") != old.get("quote_currency") or object_value(full.get("fx_metadata")) != object_value(old.get("fx_metadata")):
+                raise ValueError("Changing currency/FX on a closed record requires explicit reconciled account-currency P&L; metadata alone cannot relabel an old amount")
+        if dividend and old is None and "pnl" not in data:
+            raise ValueError("Dividend requires explicit cash P&L in account currency")
         if full.get("quantity") is None or full["quantity"] < 0 or (full["quantity"] == 0 and not dividend):
             raise ValueError("quantity must be positive")
         if full.get("entry_price") is None or full["entry_price"] < 0:

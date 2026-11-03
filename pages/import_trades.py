@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from brokers.importers import auto_detect_and_parse
 from utils.trade_ops import upsert_trade_from_broker
-from database import execute, fetch_all
+from database import execute, fetch_all, fetch_one, transaction
 
 
 BROKER_INSTRUCTIONS = {
@@ -155,6 +155,28 @@ def show(embedded=False):
 def _show_import_preview(trades: list, broker: str, filename: str, account_id=None):
     """Show parsed results, summary, and import button."""
     from brokers.cmc_markets import summarise_cmc_import
+    conversion_error = None
+    if broker == "TradingView":
+        import json
+        from utils.cashflows import prepare_import, is_dividend
+        account = fetch_one("SELECT currency FROM accounts WHERE id=?", (account_id,))
+        with st.expander("TradingView currency and dated FX", expanded=True):
+            st.caption("Prices and source dividends use the instrument's quote currency. P&L and costs are converted into the selected account currency. Existing reconciled dividend cash is retained on repeat imports.")
+            currency_override = st.text_input("Quote currency override (blank uses the exchange)", key="tv_quote_currency")
+            fx_text = st.text_area("Dated FX observations (JSON)", value="{}", key="tv_fx_rates", help='Key by event date: {"2026-11-02":{"account_per_quote":1.4,"rate_date":"2026-11-02","source":"Your dated FX source","field":"open","approximate":true}}. A rate is account-currency units per quote-currency unit; latest prior within seven days may be used.')
+        try:
+            if not account:
+                raise ValueError("Select an account before converting/importing cash events")
+            fx_rates = json.loads(fx_text)
+            prepared = []
+            for row in trades:
+                old = fetch_one("SELECT * FROM trades WHERE account_id=? AND broker='TradingView' AND broker_trade_id=?", (account_id, row.get("broker_trade_id")))
+                prepared.append(old if old and is_dividend(old) else prepare_import(row, account["currency"], currency_override or None, fx_rates))
+            trades = prepared
+            st.caption(f"Converted P&L/cash amounts: {account['currency']}. Prices retain the quote currency.")
+        except (ValueError, TypeError) as exc:
+            conversion_error = str(exc)
+            st.warning(conversion_error + ". Preview below shows source-currency amounts; import is disabled.")
 
     # Split by trade type
     real_trades = [t for t in trades if t.get("trade_type") != "dividend"]
@@ -233,7 +255,7 @@ def _show_import_preview(trades: list, broker: str, filename: str, account_id=No
     # Import options
     col1, col2, col3 = st.columns([2, 2, 3])
     with col1:
-        import_divs = st.checkbox("Include dividends as trades", value=False,
+        import_divs = st.checkbox("Include dividend cash payments", value=False,
                                    help="Dividend payments will be stored as income entries")
     with col2:
         import_open = st.checkbox("Include open positions", value=True,
@@ -247,18 +269,18 @@ def _show_import_preview(trades: list, broker: str, filename: str, account_id=No
 
     st.caption(f"Ready to import: **{len(trades_to_import)}** records")
 
-    if st.button(f"💾 Import {len(trades_to_import)} records", type="primary"):
+    if st.button(f"💾 Import {len(trades_to_import)} records", type="primary", disabled=bool(conversion_error) or not trades_to_import):
         new_count = updated_count = 0
         progress = st.progress(0)
-        for i, trade in enumerate(trades_to_import):
-            clean = {k: v for k, v in trade.items()
-                     if k not in ("trade_type", "currency")}
-            if account_id:
-                clean["account_id"] = account_id
-            tid, is_new = upsert_trade_from_broker(clean)
-            new_count     += int(is_new)
-            updated_count += int(not is_new)
-            progress.progress((i + 1) / len(trades_to_import))
+        with transaction():
+            for i, trade in enumerate(trades_to_import):
+                clean = {k: v for k, v in trade.items() if k != "currency"}
+                if account_id:
+                    clean["account_id"] = account_id
+                tid, is_new = upsert_trade_from_broker(clean)
+                new_count     += int(is_new)
+                updated_count += int(not is_new)
+                progress.progress((i + 1) / len(trades_to_import))
 
         execute(
             "INSERT INTO import_history (broker, filename, trades_imported) VALUES (?,?,?)",

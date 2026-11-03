@@ -191,8 +191,9 @@ def evaluate_playbook_rules(pb: dict | None, rules_met: dict) -> dict:
 
 def get_playbook_compliance_stats(playbook_id: int) -> dict:
     """Aggregate compliance stats across all trades using this playbook."""
+    from utils.cashflows import real_trade_sql
     trades = fetch_all(
-        "SELECT playbook_rules_met, pnl, risk_score FROM trades WHERE playbook_id=? AND status='closed' AND playbook_rules_met IS NOT NULL",
+        f"SELECT playbook_rules_met, pnl, risk_score FROM trades WHERE playbook_id=? AND status='closed' AND playbook_rules_met IS NOT NULL AND {real_trade_sql()}",
         (playbook_id,)
     )
     pb = get_playbook(playbook_id)

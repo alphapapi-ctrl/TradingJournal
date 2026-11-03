@@ -139,7 +139,7 @@ class JournalCase(unittest.TestCase):
         r.save_record("journal_entries", {"entry_type": "trade", "entry_date": "2026-10-01", "position_id": pos["id"], "stage": "pre", "pre_plan": "Plan"})
         r.save_record("journal_entries", {"entry_type": "trade", "entry_date": "2026-10-02", "position_id": pos["id"], "grade": "A", "mood": 8, "trade_category": 1})
         r.save_record("journal_entries", {"entry_type": "trade", "entry_date": "2026-10-02", "trade_id": a["id"], "grade": "B", "mood": 6, "trade_category": 3})
-        report = reporting.generate_report(account_id=self.account, start_date="2026-10-01", end_date="2026-10-01")
+        report = reporting.generate_report(account_id=self.account, start_date="2026-10-01", end_date="2026-10-01", date_basis="entry")
         section = report["currencies"]["USD"]
         self.assertEqual(section["performance"]["net_pnl"], 45)
         self.assertEqual(section["performance"]["max_drawdown"], -52)

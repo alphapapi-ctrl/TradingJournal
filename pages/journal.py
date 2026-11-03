@@ -14,6 +14,7 @@ from utils.trade_ops import (
 )
 from utils.accounts import get_accounts
 from utils.theme import get_theme, _PALETTES
+from utils.cashflows import real_trade_sql
 
 GRADE_OPTIONS = ["", "A+", "A", "B+", "B", "C+", "C", "D", "F"]
 
@@ -136,10 +137,10 @@ def _calendar_overview(account_id=None):
     # Pull all closed trades for the month
     acc_frag, acc_params = _acc_where(account_id)
     trades_month = fetch_all(
-        f"""SELECT id, symbol, direction, pnl, entry_time
+        f"""SELECT id, symbol, direction, pnl, entry_time, exit_time
             FROM trades
-            WHERE status='closed'
-              AND DATE(entry_time) BETWEEN ? AND ?
+            WHERE status='closed' AND {real_trade_sql()}
+              AND DATE(exit_time) BETWEEN ? AND ?
               AND {acc_frag}
             ORDER BY entry_time""",
         [str(month_start), str(month_end)] + acc_params,
@@ -149,7 +150,7 @@ def _calendar_overview(account_id=None):
     entered_rows = fetch_all(
         f"""SELECT DATE(entry_time) as d, COUNT(*) as n
             FROM trades
-            WHERE DATE(entry_time) BETWEEN ? AND ?
+            WHERE DATE(entry_time) BETWEEN ? AND ? AND {real_trade_sql()}
               AND {acc_frag}
             GROUP BY DATE(entry_time)""",
         [str(month_start), str(month_end)] + acc_params,
@@ -173,7 +174,7 @@ def _calendar_overview(account_id=None):
     trade_has_post = {}                # trade_id -> bool
 
     for t in trades_month:
-        d = (t["entry_time"] or "")[:10]
+        d = (t["exit_time"] or "")[:10]
         day_trades[d].append(t)
 
     # Also find which positions have a post journal entry
@@ -550,7 +551,7 @@ def _menaker_category_stats(month_start, month_end, account_id=None, p=None):
 @st.cache_data(ttl=600, show_spinner=False)
 def _live_quote(symbol: str, exchange_hint: str, since_iso: str):
     """
-    Resolve a journal symbol to yfinance, return (yf_symbol, last_price, div_per_share_since).
+    Return symbol, quote price, provider distribution estimate, currency and as-of time.
     Returns None if no data found. Cached 10 min.
     """
     import yfinance as yf
@@ -584,10 +585,33 @@ def _live_quote(symbol: str, exchange_hint: str, since_iso: str):
                     div_ps = float(divs[divs.index.normalize() > since_ts].sum())
             except Exception:
                 pass
-            return cand, price, div_ps
+            metadata = t.history_metadata or {}
+            return cand, price, div_ps, metadata.get("currency") or ("AUD" if cand.endswith(".AX") else None), h.index[-1].isoformat()
         except Exception:
             continue
     return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _live_fx(quote_currency, account_currency, day, field="close"):
+    """On-demand provider estimate; preserves the rate date and price field."""
+    if quote_currency == account_currency:
+        return None
+    try:
+        import yfinance as yf
+        from datetime import date, timedelta
+        target = date.fromisoformat(day[:10])
+        ticker = f"{account_currency}{quote_currency}=X"
+        history = yf.Ticker(ticker).history(start=(target - timedelta(days=7)).isoformat(), end=(target + timedelta(days=1)).isoformat(), auto_adjust=False)
+        if history is None or history.empty:
+            return None
+        rate = float(history[field.title()].iloc[-1])
+        if rate <= 0:
+            return None
+        return {"account_per_quote": 1 / rate, "rate_date": history.index[-1].date().isoformat(),
+                "source": f"yfinance {ticker}", "field": field, "approximate": True}
+    except Exception:
+        return None
 
 
 def _trade_exchange_hint(raw_data) -> str:
@@ -607,8 +631,7 @@ def _open_positions_section(account_id=None, p=None):
 
     acc_frag, acc_params = _acc_where(account_id)
     open_trades = fetch_all(
-        f"""SELECT id, symbol, direction, broker, quantity, entry_price, entry_time,
-                   commission, position_id, account_id, raw_data
+        f"""SELECT *
             FROM trades
             WHERE status='open' AND {acc_frag}
             ORDER BY entry_time DESC""",
@@ -622,7 +645,9 @@ def _open_positions_section(account_id=None, p=None):
         st.caption("No open positions.")
         return
 
-    # ── Live quotes: unrealised P&L + dividends since entry ──────────────────
+    from utils.cashflows import unrealised, legacy_fx, quote_currency, cash_summary, is_test, entry_fx_field
+    accounts = {a["id"]: a for a in fetch_all("SELECT id,currency FROM accounts")}
+    # Price/FX marks and recorded distributions use separate ledgers.
     quotes = {}   # trade_id -> (yf_sym, price, div_ps)
     with st.spinner("Fetching live prices…"):
         for t in open_trades:
@@ -631,33 +656,44 @@ def _open_positions_section(account_id=None, p=None):
             if q:
                 quotes[t["id"]] = q
 
-    total_unreal = total_divs = 0.0
-    priced = 0
+    marks, totals, estimates = {}, {}, {}
     for t in open_trades:
         q = quotes.get(t["id"])
         if not q:
             continue
-        _, price, div_ps = q
-        ep, qty = float(t.get("entry_price") or 0), float(t.get("quantity") or 0)
-        sign = 1 if t["direction"] == "LONG" else -1
-        total_unreal += (price - ep) * qty * sign
-        total_divs   += div_ps * qty * sign
-        priced += 1
-
-    if priced:
-        net = total_unreal + total_divs
-        net_col = p["--accent"] if net >= 0 else p["--danger"]
-        div_txt = (f' <span style="color:{p["--text-faint"]};">(incl. '
-                   f'{total_divs:+,.2f} dividends)</span>') if abs(total_divs) > 0.005 else ""
-        missing = len(open_trades) - priced
-        miss_txt = (f' <span style="color:{p["--text-faint"]};">· {missing} unpriced</span>'
-                    if missing else "")
-        st.markdown(
-            f'<div style="font-size:0.9rem;margin-bottom:8px;color:{p["--text-muted"]};">'
-            f'Open P&L: <b style="font-family:\'JetBrains Mono\';color:{net_col};">{net:+,.2f}</b>'
-            f'{div_txt}{miss_txt}</div>',
-            unsafe_allow_html=True,
-        )
+        _, price, div_ps, provider_currency, as_of = q
+        ccy = (accounts.get(t.get("account_id")) or {}).get("currency", "UNASSIGNED")
+        quote = provider_currency or quote_currency(t, ccy)
+        try:
+            entry = legacy_fx(t).get("entry") or _live_fx(quote, ccy, t["entry_time"], entry_fx_field(t))
+            current = _live_fx(quote, ccy, as_of)
+            mark = unrealised(t, ccy, price, current, entry, as_of, quote)
+            marks[t["id"]] = mark
+            if mark["unrealised_pnl"] is not None and not is_test(t):
+                totals[ccy] = totals.get(ccy, 0) + mark["unrealised_pnl"]
+        except ValueError:
+            continue
+        estimates[quote] = estimates.get(quote, 0) + div_ps * float(t["quantity"]) * (1 if t["direction"] == "LONG" else -1)
+    for ccy, value in sorted(totals.items()):
+        st.markdown(f"**Unrealised price/FX P&L ({ccy}): {value:+,.2f}**")
+    if totals:
+        st.caption("Provider quotes and daily FX are estimates; stored entry FX is used where available. Price/FX gains include recorded entry costs and exclude distributions. Unstored historical entries use daily close; authorised opening-price rebalance entries use daily open.")
+    missing = sum(t["id"] not in marks or marks[t["id"]]["unrealised_pnl"] is None for t in open_trades)
+    if missing:
+        st.caption(f"{missing} holdings lack a complete price/FX valuation and are excluded from totals.")
+    account_ids = sorted({t["account_id"] for t in open_trades if t.get("account_id")})
+    if account_ids:
+        cash_rows = fetch_all(f"SELECT * FROM trades WHERE trade_type='dividend' AND status='closed' AND account_id IN ({','.join('?' for _ in account_ids)})", account_ids)
+        for ccy in sorted({accounts[aid]["currency"] for aid in account_ids}):
+            rows = [r for r in cash_rows if accounts[r["account_id"]]["currency"] == ccy and not is_test(r)]
+            cash = cash_summary(rows, ccy)
+            if rows:
+                dates = sorted(r["exit_time"][:10] for r in rows)
+                st.caption(f"Recorded cash distributions ({ccy}): {cash['dividend_income']:+,.2f} · {cash['dividend_count']} payments · {dates[0]} to {dates[-1]}. Separate from unrealised price/FX P&L.")
+                if cash["unconverted_record_ids"]:
+                    st.warning("Distribution cash with unresolved FX is excluded: " + ", ".join(map(str, cash["unconverted_record_ids"])))
+    if estimates:
+        st.caption("Provider distribution estimate since entry (quote currency, current quantity × ex-date history): " + "; ".join(f"{ccy} {value:+,.2f}" for ccy, value in sorted(estimates.items())) + ". This is a separate coverage estimate, not an additional cash receipt; it is excluded from P&L totals and not netted against payment-date imports.")
 
     # Check which open trades have any journal entry (pre or post)
     open_ids = [t["id"] for t in open_trades]
@@ -715,29 +751,22 @@ def _open_positions_section(account_id=None, p=None):
 
         q = quotes.get(t["id"])
         if q:
-            _, last_price, div_ps = q
-            sign = 1 if t["direction"] == "LONG" else -1
-            unreal = (last_price - ep) * qty * sign
-            div_amt = div_ps * qty * sign
-            open_pnl = unreal + div_amt
-            pnl_col = p["--accent"] if open_pnl >= 0 else p["--danger"]
+            _, last_price, div_ps, provider_currency, as_of = q
+            mark = marks.get(t["id"], {})
+            open_pnl = mark.get("unrealised_pnl")
+            ccy = (accounts.get(t.get("account_id")) or {}).get("currency", "UNASSIGNED")
+            pnl_col = p["--accent"] if open_pnl is not None and open_pnl >= 0 else p["--danger"]
+            pnl_text = f"{open_pnl:+,.2f}" if open_pnl is not None else "FX unavailable"
             last_cell = (
                 f'<div style="text-align:right;">'
-                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Last</div>'
+                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Last ({provider_currency or quote_currency(t, ccy)})</div>'
                 f'<div style="font-family:\'JetBrains Mono\';font-size:0.8rem;color:{p["--text-primary"]};">{last_price:,.4f}</div>'
                 f'</div>'
                 f'<div style="text-align:right;">'
-                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Open P&L</div>'
-                f'<div style="font-family:\'JetBrains Mono\';font-size:0.8rem;font-weight:700;color:{pnl_col};">{open_pnl:+,.2f}</div>'
+                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Unrealised ({ccy})</div>'
+                f'<div style="font-family:\'JetBrains Mono\';font-size:0.8rem;font-weight:700;color:{pnl_col};">{pnl_text}</div>'
                 f'</div>'
             )
-            if abs(div_amt) > 0.005:
-                last_cell += (
-                    f'<div style="text-align:right;">'
-                    f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Divs</div>'
-                    f'<div style="font-family:\'JetBrains Mono\';font-size:0.78rem;color:{p["--accent"]};">{div_amt:+,.2f}</div>'
-                    f'</div>'
-                )
         else:
             last_cell = (
                 f'<div style="text-align:right;">'
@@ -765,7 +794,7 @@ def _open_positions_section(account_id=None, p=None):
                 f'<div style="font-family:\'JetBrains Mono\';font-size:0.8rem;color:{p["--text-primary"]};">{qty:g}</div>'
                 f'</div>'
                 f'<div style="text-align:right;">'
-                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Entry</div>'
+                f'<div style="font-size:0.7rem;color:{p["--text-muted"]};">Entry ({quote_currency(t, (accounts.get(t.get("account_id")) or {}).get("currency")) or "unknown"})</div>'
                 f'<div style="font-family:\'JetBrains Mono\';font-size:0.8rem;color:{p["--text-primary"]};">{ep:.4f}</div>'
                 f'</div>'
                 f'{last_cell}'
@@ -811,7 +840,7 @@ def _daily_journal(account_id=None):
     # Day's trades summary
     acc_frag, acc_params = _acc_where(account_id)
     day_trades = fetch_all(
-        f"SELECT id, symbol, direction, pnl FROM trades WHERE status='closed' AND DATE(entry_time)=? AND {acc_frag}",
+        f"SELECT id, symbol, direction, pnl FROM trades WHERE status='closed' AND {real_trade_sql()} AND DATE(exit_time)=? AND {acc_frag}",
         [str(selected_date)] + acc_params,
     )
     if day_trades:
@@ -863,7 +892,7 @@ def _weekly_journal(account_id=None):
     import pandas as pd
     acc_frag, acc_params = _acc_where(account_id)
     week_trades = fetch_all(
-        f"SELECT pnl FROM trades WHERE status='closed' AND entry_time>=? AND entry_time<=? AND {acc_frag}",
+        f"SELECT pnl FROM trades WHERE status='closed' AND {real_trade_sql()} AND substr(exit_time,1,10)>=? AND substr(exit_time,1,10)<=? AND {acc_frag}",
         [str(selected_week), str(week_end) + " 23:59:59"] + acc_params,
     )
     if week_trades:

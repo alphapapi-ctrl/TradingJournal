@@ -97,8 +97,12 @@ with st.sidebar:
     wins_n   = int(stats.get("wins_closed") or 0)
     open_n   = int(stats.get("open_n") or 0)
     net_pnl  = float(stats.get("net_pnl") or 0)
+    from html import escape
+    net_pnl_text = " · ".join(f"{escape(str(ccy))} " + (f"{amount:+,.2f}" if amount is not None else "FX pending") for ccy, amount in stats.get("net_pnl_by_currency", {}).items()) or f"{net_pnl:+,.2f}"
     acc_n    = int(stats.get("acc_n") or 0)
     wr       = f"{wins_n/total_n*100:.0f}%" if total_n > 0 else "—"
+    if stats.get("unvalued_closed"):
+        wr = "FX pending"
     pnl_col  = p["--accent"] if net_pnl >= 0 else p["--danger"]
     open_html = f"<div>Open: <span style='color:{p['--warning']};'>{open_n}</span></div>" if open_n > 0 else ""
 
@@ -107,7 +111,7 @@ with st.sidebar:
         <div>Accounts: <span style="color:{p['--text-secondary']};">{acc_n}</span></div>
         <div>Trades: <span style="color:{p['--text-secondary']};">{total_n}</span></div>
         <div>Win rate: <span style="color:{p['--accent']};">{wr}</span></div>
-        <div>Net P&L: <span style="color:{pnl_col};">{net_pnl:+,.2f}</span></div>
+        <div>Realised cash: <span style="color:{pnl_col};">{net_pnl_text}</span></div>
         {open_html}
     </div>""", unsafe_allow_html=True)
 

@@ -6,20 +6,21 @@ import numpy as np
 import json
 from database import fetch_all
 from utils.playbook_logic import get_playbook, get_playbook_compliance_stats
+from utils.cashflows import real_trade_sql, account_net
 
 
-def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=None, account_id=None):
+def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=None, account_id=None, include_test=False, currency=None):
     """Compute general trading statistics from closed trades."""
-    where = ["status='closed'"]
+    where = ["status='closed'", real_trade_sql(include_test=include_test)]
     params = []
     if symbol:
         where.append("symbol=?")
         params.append(symbol)
     if start_date:
-        where.append("entry_time>=?")
+        where.append("substr(exit_time,1,10)>=?")
         params.append(start_date)
     if end_date:
-        where.append("entry_time<=?")
+        where.append("substr(exit_time,1,10)<=?")
         params.append(end_date)
     if playbook_id:
         where.append("playbook_id=?")
@@ -27,12 +28,17 @@ def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=Non
     if account_id:
         where.append("account_id=?")
         params.append(account_id)
+    if currency:
+        where.append("account_id IN (SELECT id FROM accounts WHERE currency=?)")
+        params.append(currency)
 
     trades = fetch_all(
-        f"SELECT * FROM trades WHERE {' AND '.join(where)} ORDER BY entry_time",
+        f"SELECT * FROM trades WHERE {' AND '.join(where)} ORDER BY exit_time,id",
         params
     )
 
+    accounts = {a["id"]: a["currency"] for a in fetch_all("SELECT id,currency FROM accounts")}
+    trades = [t for t in trades if account_net(t, accounts.get(t.get("account_id"), "UNASSIGNED")) is not None]
     if not trades:
         return {}
 
@@ -63,7 +69,7 @@ def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=Non
     df["cumulative_pnl"] = df["net_pnl"].cumsum()
 
     # Max drawdown
-    peak = df["cumulative_pnl"].cummax()
+    peak = df["cumulative_pnl"].cummax().clip(lower=0)
     dd = df["cumulative_pnl"] - peak
     max_drawdown = dd.min()
 
@@ -102,7 +108,7 @@ def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=Non
 
     # Monthly P&L
     if "entry_time" in df.columns:
-        df["month"] = pd.to_datetime(df["entry_time"], errors="coerce").dt.to_period("M").astype(str)
+        df["month"] = pd.to_datetime(df["exit_time"], errors="coerce", format="mixed").dt.to_period("M").astype(str)
         monthly = df.groupby("month")["net_pnl"].sum().reset_index()
         monthly.columns = ["month", "pnl"]
         monthly_data = monthly.to_dict("records")
@@ -131,7 +137,8 @@ def get_trade_stats(symbol=None, start_date=None, end_date=None, playbook_id=Non
         "by_symbol": by_symbol,
         "by_direction": by_direction,
         "monthly": monthly_data,
-        "equity_curve": df[["entry_time", "cumulative_pnl"]].to_dict("records"),
+        "equity_curve": df[["exit_time", "cumulative_pnl"]].rename(columns={"exit_time": "entry_time"}).to_dict("records"),
+        "date_basis": "exit_time; equity_curve entry_time key retained for older charts",
     }
 
 
@@ -145,7 +152,7 @@ def get_playbook_stats(playbook_id: int) -> dict:
 
     # Risk score distribution
     trades = fetch_all(
-        "SELECT risk_score, pnl FROM trades WHERE playbook_id=? AND status='closed'",
+        f"SELECT risk_score, pnl FROM trades WHERE playbook_id=? AND status='closed' AND {real_trade_sql()}",
         (playbook_id,)
     )
     if trades:

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from utils.statistics import get_trade_stats, get_playbook_stats
 from utils.playbook_logic import get_playbooks, get_playbook
 from database import fetch_all
+from utils.cashflows import real_trade_sql
 
 CHART_STYLE = dict(
     plot_bgcolor="rgba(0,0,0,0)",
@@ -55,12 +56,34 @@ def _general_stats(account_id=None):
     sym   = c1.selectbox("Symbol", ["All"] + symbols, key="gs_sym")
     start = c2.date_input("From", value=None, key="gs_start")
     end   = c3.date_input("To",   value=None, key="gs_end")
+    include_test = st.checkbox("Include test/DUMMY records in general performance", value=False, key="gs_include_test")
+    from journal_mcp.reporting import generate_report
+    cash_report = generate_report("performance", account_id=account_id, symbol=None if sym == "All" else sym,
+                                  start_date=str(start) if start else None, end_date=str(end) if end else None, include_test=include_test)
+    currencies = list(cash_report["currencies"])
+    currency = st.selectbox("Report currency", currencies, key="gs_currency") if len(currencies) > 1 else currencies[0] if currencies else None
+    if currency:
+        section = cash_report["currencies"][currency]
+        cash = section["cashflow"]
+        a, b, c = st.columns(3)
+        a.metric(f"Realised trade P&L ({currency})", f"{cash['trade_net_pnl']:+,.2f}")
+        b.metric(f"Dividend cash ({currency})", f"{cash['dividend_income']:+,.2f}")
+        c.metric(f"Realised total ({currency})", f"{cash['realised_cash_pnl']:+,.2f}")
+        st.caption("Exit/payment dates. Dividends are cash income and are excluded from trade counts, win rates and process statistics. Unrealised gains and provider dividend estimates are separate.")
+        if cash["unconverted_record_ids"]:
+            st.warning("Missing account-currency conversion for records: " + ", ".join(map(str, cash["unconverted_record_ids"])))
+        if section["provisional_trade_ids"]:
+            st.warning("Provisional entry/FX reconciliation: " + ", ".join(map(str, section["provisional_trade_ids"])))
+        if cash["equity_curve"]:
+            curve = pd.DataFrame(cash["equity_curve"])
+            st.plotly_chart(px.line(curve, x="date", y="cumulative_pnl", title=f"Realised cash equity including distributions ({currency})"), use_container_width=True)
 
     stats = get_trade_stats(
         symbol     =None if sym   == "All" else sym,
         start_date =str(start) if start else None,
         end_date   =str(end)   if end   else None,
         account_id =account_id,
+        include_test=include_test, currency=currency,
     )
     if not stats:
         st.info("No closed trades yet. Import trades to see statistics.")
@@ -179,7 +202,7 @@ def _category_stats(account_id=None):
             FROM journal_entries je
             JOIN trades t ON (je.trade_id = t.id OR (je.position_id IS NOT NULL AND je.position_id = t.position_id))
             WHERE je.stage='post' AND je.trade_category IS NOT NULL
-              AND t.status='closed' {acc_frag}""",
+              AND t.status='closed' AND {real_trade_sql('t')} {acc_frag}""",
         params,
     )
     if not rows:
@@ -278,7 +301,7 @@ def _journal_discipline(account_id=None):
     params = [account_id] if account_id else []
     trades = fetch_all(
         f"""SELECT id, position_id, symbol, pnl, commission, entry_time
-            FROM trades WHERE status='closed' {acc_frag}""",
+            FROM trades WHERE status='closed' AND {real_trade_sql()} {acc_frag}""",
         params,
     )
     if not trades:
@@ -524,10 +547,10 @@ def _threshold_stats():
         return
 
     trades = fetch_all(
-        """SELECT t.id, t.pnl, t.commission, t.risk_score, t.playbook_rules_met,
+        f"""SELECT t.id, t.pnl, t.commission, t.risk_score, t.playbook_rules_met,
                   t.entry_time, t.symbol, t.direction
            FROM trades t
-           WHERE t.playbook_id=? AND t.status='closed' AND t.playbook_rules_met IS NOT NULL""",
+           WHERE t.playbook_id=? AND t.status='closed' AND t.playbook_rules_met IS NOT NULL AND {real_trade_sql('t')}""",
         (pb_id,)
     )
     if not trades:

@@ -66,10 +66,10 @@ def export_records(entity: str, filters: dict | None = None, start_date: str | N
 
 def save_report(kind: str = "all", account_id: int | None = None, start_date: str | None = None,
                 end_date: str | None = None, symbol: str | None = None, playbook_id: int | None = None,
-                format: str = "markdown") -> dict:
+                format: str = "markdown", include_test: bool = False, date_basis: str = "cashflow", valuations: list[dict] | None = None) -> dict:
     if format not in ("markdown", "json"):
         raise ValueError("format must be markdown or json")
-    report = generate_report(kind, account_id, start_date, end_date, symbol, playbook_id)
+    report = generate_report(kind, account_id, start_date, end_date, symbol, playbook_id, include_test, date_basis, valuations)
     content = markdown_report(report) if format == "markdown" else json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False)
     return _write_export(content, "md" if format == "markdown" else "json", "report")
 
@@ -101,8 +101,10 @@ def backup_database() -> dict:
 
 
 def import_trades(filename: str, content: str, account_id: int, encoding: str = "utf-8",
-                  dry_run: bool = True, include_open: bool = True, include_dividends: bool = False) -> dict:
-    records.get_record("accounts", account_id)
+                  dry_run: bool = True, include_open: bool = True, include_dividends: bool = False,
+                  quote_currency: str | None = None, fx_rates: dict | None = None) -> dict:
+    account = records.get_record("accounts", account_id)
+    from utils.cashflows import is_dividend, prepare_import, legacy_fx
     if encoding not in ("utf-8", "base64"):
         raise ValueError("encoding must be utf-8 or base64")
     if len(content) > MAX_IMPORT_BYTES * 4 // 3 + 8:
@@ -118,7 +120,25 @@ def import_trades(filename: str, content: str, account_id: int, encoding: str = 
     if not parsed:
         raise ValueError("No importable trades detected")
     prepared = []
+    skips = {}
     for row in parsed:
+        matches = db.fetch_all("SELECT * FROM trades WHERE account_id=? AND broker=? AND broker_trade_id=?",
+                               (account_id, broker, row.get("broker_trade_id"))) if row.get("broker_trade_id") else []
+        if len(matches) > 1:
+            raise ValueError("Duplicate broker IDs already exist in this account; resolve them before importing")
+        old = matches[0] if matches else None
+        if old and (is_dividend(old) or legacy_fx(old).get("reconciled")):
+            # Independently reconciled cash/FX values and their source metadata
+            # are authoritative. Reimport must not turn AUD cash back into USD.
+            if is_dividend(old) != is_dividend(row):
+                raise ValueError("Broker ID collides with a different record type")
+            if not is_dividend(old) and any(str(old.get(k)) != str(row.get(k)) for k in ("entry_time", "exit_time", "quantity", "entry_price", "exit_price")):
+                raise ValueError(f"Trade {old['id']} was reconciled separately; review the source discrepancy explicitly")
+            skips[row["broker_trade_id"]] = old["id"]
+            prepared.append(old)
+            continue
+        if broker == "TradingView":
+            row = prepare_import(row, account["currency"], quote_currency, fx_rates)
         data = {k: v for k, v in row.items() if k in records.writable("trades")}
         # Broker parsers can return numpy scalars / NaN; normalise before validation.
         for key, value in list(data.items()):
@@ -129,15 +149,20 @@ def import_trades(filename: str, content: str, account_id: int, encoding: str = 
         if not data.get("broker_trade_id"):
             identity = {k: data.get(k) for k in ("symbol", "direction", "entry_time", "exit_time", "quantity", "entry_price", "exit_price", "trade_type")}
             data["broker_trade_id"] = "mcp-" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
-        records._validate("trades", data)
+        data = records._validate("trades", data)
         prepared.append(data)
     if dry_run:
         return {"dry_run": True, "broker": broker, "trades": len(prepared), "preview": prepared[:20],
+                "dividends": sum(is_dividend(row) for row in prepared), "skipped_existing": len(skips),
                 "next_step": "Call again with dry_run=false to save these trades"}
-    created = updated = 0
+    created = updated = skipped = 0
     ids = []
     with db.transaction():
         for data in prepared:
+            if data.get("broker_trade_id") in skips:
+                ids.append(skips[data["broker_trade_id"]])
+                skipped += 1
+                continue
             existing = db.fetch_all("SELECT id FROM trades WHERE account_id=? AND broker=? AND broker_trade_id=?",
                                     (account_id, broker, data["broker_trade_id"]))
             if len(existing) > 1:
@@ -156,8 +181,10 @@ def import_trades(filename: str, content: str, account_id: int, encoding: str = 
                 tid = records.save_record("trades", data)["id"]
                 created += 1
             ids.append(tid)
-        db.execute("INSERT INTO import_history(broker,filename,trades_imported) VALUES (?,?,?)", (broker, Path(filename).name, len(ids)))
-    return {"dry_run": False, "broker": broker, "created": created, "updated": updated, "trade_ids": ids[:100], "ids_truncated": len(ids) > 100}
+        if created or updated:
+            db.execute("INSERT INTO import_history(broker,filename,trades_imported) VALUES (?,?,?)", (broker, Path(filename).name, created + updated))
+    return {"dry_run": False, "broker": broker, "created": created, "updated": updated, "skipped_existing": skipped,
+            "trade_ids": ids[:100], "ids_truncated": len(ids) > 100}
 
 
 def settings(action: str = "get", values: dict | None = None, include_secrets: bool = False) -> dict:

@@ -78,6 +78,10 @@ your trades, journal entries and any stored credentials.
 
 ## AI access over the local network (MCP)
 
+Dividend imports, dated account-currency FX and separate trade/income reporting
+are described in [INCOME_FX.md](INCOME_FX.md). Deployment updates code/schema;
+it does not import or recalculate existing portfolio records.
+
 The optional MCP server gives compatible AI applications access to journal records,
 trade/position management, playbooks, reports, imports/exports, settings, and
 replay/reference data. It supports hosted or local models through your AI application.

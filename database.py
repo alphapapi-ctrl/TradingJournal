@@ -304,6 +304,9 @@ def _run_migrations(conn):
     migrations = [
         ("trades",              "account_id",           "INTEGER"),
         ("trades",              "trade_type",           "TEXT"),
+        ("trades",              "quote_currency",       "TEXT"),
+        ("trades",              "fx_metadata",          "TEXT"),
+        ("trades",              "is_test",              "INTEGER NOT NULL DEFAULT 0"),
         ("journal_entries",     "stage",                "TEXT DEFAULT 'post'"),
         ("journal_entries",     "playbook_id",          "INTEGER"),
         ("journal_entries",     "pre_analysis",         "TEXT"),

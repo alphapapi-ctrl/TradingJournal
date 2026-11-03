@@ -19,6 +19,8 @@ FILES = (
     "pages/trades.py", "pages/trade_detail.py", "utils/trade_context.py",
     "utils/trade_review_ui.py", "utils/planning_ui.py", "tests/test_trade_workspace_ui.py",
     "app.py", "utils/journal_display.py",
+    "brokers/tradingview.py", "brokers/importers.py", "utils/cashflows.py", "utils/statistics.py",
+    "pages/import_trades.py", "pages/statistics.py", "utils/sidebar_stats.py", "INCOME_FX.md", "tests/test_income_fx.py",
 )
 
 

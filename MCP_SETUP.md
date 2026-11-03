@@ -288,9 +288,13 @@ features require the same data sources and configuration as the browser journal.
 - Default page size 100, maximum 500. Imports: 8 MiB / 5,000 rows. Reports:
   20,000 trades, with equity curves sampled to at most 500 points. Larger work
   requires narrower filters or paginated requests; totals are not silently truncated.
-- Reports filter inclusive dates using **entry time**, matching the existing
-  journal's general reports. Amounts are grouped by account currency with no
-  currency conversion. Net P&L uses `pnl - abs(commission) - abs(swap)`.
+- Reports use inclusive **exit/payment dates** for realised trade cash and
+  dividends (`date_basis=entry` retains legacy date selection). Amounts are
+  grouped by account currency. Dated FX must be supplied for cross-currency
+  TradingView imports and open stock/ETF marks. Unknown FX amounts are identified
+  rather than relabelled. Net P&L uses `pnl - abs(commission) - abs(swap)`.
+  Dividends enter cash equity once and are excluded from trade statistics.
+  Test/DUMMY records are excluded by default. See [INCOME_FX.md](INCOME_FX.md).
 - MCP drawdown includes the initial zero-equity peak, so an initial losing
   streak is counted. Undefined ratios return null. These differ from the older
   browser report's initial-peak handling and ratio sentinels. Categories and

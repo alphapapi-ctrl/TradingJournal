@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from statistics import mean
+from datetime import date
 
 import database as db
 from journal_mcp.records import get_record, where_clause
 from utils.playbook_logic import evaluate_playbook_rules, get_playbook
+from utils.cashflows import is_dividend, cash_summary, account_net, legacy_fx, unrealised
 
 MAX_REPORT_TRADES = 20000
 
@@ -17,7 +19,8 @@ def net(trade: dict) -> float:
 
 
 def performance(rows: list[dict]) -> dict:
-    """Use the journal's entry-time ordering and net-of-costs P&L convention."""
+    """Trade outcomes only; native cash income never participates in win ratios."""
+    rows = sorted((row for row in rows if not is_dividend(row)), key=lambda r: (r.get("exit_time") or "", r["id"]))
     if not rows:
         return {"total_trades": 0, "net_pnl": 0, "equity_curve": []}
     values = [net(row) for row in rows]
@@ -32,11 +35,12 @@ def performance(rows: list[dict]) -> dict:
         cumulative += value
         peak = max(peak, cumulative)
         drawdown = min(drawdown, cumulative - peak)
-        monthly[(row.get("entry_time") or "Unknown")[:7]] += value
+        monthly[(row.get("exit_time") or "Unknown")[:7]] += value
         win_streak = win_streak + 1 if value > 0 else 0
         loss_streak = loss_streak + 1 if value < 0 else 0
         longest_win, longest_loss = max(longest_win, win_streak), max(longest_loss, loss_streak)
-        curve.append({"trade_id": row["id"], "entry_time": row.get("entry_time"), "cumulative_pnl": round(cumulative, 2)})
+        curve.append({"trade_id": row["id"], "entry_time": row.get("entry_time"), "exit_time": row.get("exit_time"),
+                      "date": row.get("exit_time"), "cumulative_pnl": round(cumulative, 2)})
     def grouped(field):
         groups = defaultdict(list)
         for row in rows:
@@ -66,7 +70,8 @@ def performance(rows: list[dict]) -> dict:
 
 
 def generate_report(kind: str = "all", account_id: int | None = None, start_date: str | None = None,
-                    end_date: str | None = None, symbol: str | None = None, playbook_id: int | None = None) -> dict:
+                    end_date: str | None = None, symbol: str | None = None, playbook_id: int | None = None,
+                    include_test: bool = False, date_basis: str = "cashflow", valuations: list[dict] | None = None) -> dict:
     if kind not in ("all", "performance", "categories", "discipline", "playbooks", "risk", "open_positions"):
         raise ValueError("kind must be all, performance, categories, discipline, playbooks, risk, or open_positions")
     filters = {k: v for k, v in {"account_id": account_id, "symbol": symbol, "playbook_id": playbook_id}.items() if v is not None}
@@ -74,26 +79,65 @@ def generate_report(kind: str = "all", account_id: int | None = None, start_date
         get_record("accounts", account_id)
     if playbook_id is not None:
         get_record("playbooks", playbook_id)
+    if date_basis not in ("cashflow", "entry"):
+        raise ValueError("date_basis must be cashflow or entry")
+    if start_date:
+        date.fromisoformat(start_date)
+    if end_date:
+        date.fromisoformat(end_date)
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("start_date must precede end_date")
+    if valuations is not None and (not isinstance(valuations, list) or len(valuations) > 500):
+        raise ValueError("Supply up to 500 explicit open-position valuations")
+    marks = {}
+    for mark in valuations or []:
+        if not isinstance(mark, dict) or not isinstance(mark.get("trade_id"), int) or mark["trade_id"] in marks:
+            raise ValueError("Valuations require unique trade_id values")
+        if not mark.get("as_of"):
+            raise ValueError("Valuation as_of date/time is required")
+        date.fromisoformat(mark["as_of"][:10])
+        marks[mark["trade_id"]] = mark
     with db.transaction(write=False):
-        where, params = where_clause("trades", filters, start_date, end_date)
-        rows = db.fetch_all(f"SELECT * FROM trades{where} ORDER BY entry_time,id LIMIT ?", params + [MAX_REPORT_TRADES + 1])
+        where, params = where_clause("trades", filters)
+        clauses = [where[7:]] if where else []
+        date_column = "entry_time" if date_basis == "entry" else "CASE WHEN status='closed' THEN exit_time ELSE entry_time END"
+        for boundary, operator in ((start_date, ">="), (end_date, "<=")):
+            if boundary:
+                clauses.append(f"substr({date_column},1,10) {operator} ?")
+                params.append(boundary)
+        base_where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        test_sql = "(COALESCE(is_test,0)=1 OR UPPER(COALESCE(broker,''))='DUMMY' OR substr(UPPER(COALESCE(broker_trade_id,'')),1,6)='DUMMY_')"
+        # Respect the explicit column and the older raw-data test marker.
+        test_sql = f"({test_sql} OR COALESCE(json_extract(CASE WHEN json_valid(raw_data) THEN raw_data ELSE '{{}}' END,'$.is_test'),0)=1)"
+        excluded = db.fetch_one(f"SELECT COUNT(*) n FROM trades{base_where}{' AND ' if clauses else ' WHERE '}{test_sql}", params)["n"] if not include_test else 0
+        if not include_test:
+            clauses.append("NOT " + test_sql)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = db.fetch_all(f"SELECT * FROM trades{where} ORDER BY exit_time,id LIMIT ?", params + [MAX_REPORT_TRADES + 1])
         if len(rows) > MAX_REPORT_TRADES:
             raise ValueError(f"Report exceeds {MAX_REPORT_TRADES} trades; narrow the date/account/symbol filters")
         accounts = {a["id"]: a for a in db.fetch_all("SELECT id,name,currency FROM accounts")}
+        open_ids = {r["id"] for r in rows if r["status"] == "open" and not is_dividend(r)}
+        if set(marks) - open_ids:
+            raise ValueError("Valuation trade_id must identify an open trade in the selected report")
         currency = lambda row: (accounts.get(row.get("account_id")) or {}).get("currency") or "UNASSIGNED"
         groups = defaultdict(list)
         for row in rows:
             groups[currency(row)].append(row)
         result = {
-            "filters": {"account_id": account_id, "start_date": start_date, "end_date": end_date, "symbol": symbol, "playbook_id": playbook_id},
+            "filters": {"account_id": account_id, "start_date": start_date, "end_date": end_date, "symbol": symbol, "playbook_id": playbook_id,
+                        "include_test": include_test, "date_basis": date_basis},
             "methodology": {
-                "date_basis": "entry_time (inclusive calendar dates, matching the journal reports)",
+                "date_basis": f"{date_basis}: closed trade exit dates / dividend payment dates; open entries use entry dates; inclusive calendar dates",
                 "net_pnl": "pnl - abs(commission) - abs(swap), matching general performance reports",
                 "drawdown": "Cumulative closed net P&L, including initial zero equity peak",
-                "currency": "Results separated by account currency; no FX conversion",
+                "currency": "Stored P&L and costs in account currency; explicit dated FX metadata required for cross-currency valuation. Unknown amounts excluded with record IDs.",
+                "income": "Dividends excluded from trade counts/ratios/discipline/playbooks; included once in realised cashflow and cash equity on payment dates. Unrealised price/FX gains remain separate.",
+                "test_records": "Excluded by default: is_test, raw_data.is_test, DUMMY broker or DUMMY_ broker IDs. Demo account type alone is not a test flag.",
                 "undefined_ratios": "null when no denominator exists",
                 "review_selection": "Most recent trade review, otherwise most recent position review; each trade counted once",
-            }, "currencies": {}, "trade_count": len(rows),
+            }, "currencies": {}, "trade_count": sum(not is_dividend(r) for r in rows),
+            "cash_event_count": sum(is_dividend(r) for r in rows), "record_count": len(rows), "excluded_test_records": excluded,
         }
         # Select only review metadata: never load journal prose into a report.
         reviews = db.fetch_all(
@@ -106,21 +150,38 @@ def generate_report(kind: str = "all", account_id: int | None = None, start_date
             if review.get("position_id"):
                 lookup[("position", review["position_id"], review["stage"])] = review
         for ccy, group in groups.items():
-            closed = [r for r in group if r["status"] == "closed"]
-            section = {}
+            cash_closed = [r for r in group if r["status"] == "closed"]
+            all_closed_trades = [r for r in cash_closed if not is_dividend(r)]
+            closed = [r for r in all_closed_trades if account_net(r, ccy) is not None]
+            section = {"closed_trade_count": len(all_closed_trades),
+                       "unconverted_trade_ids": [r["id"] for r in all_closed_trades if account_net(r, ccy) is None],
+                       "provisional_trade_ids": [r["id"] for r in all_closed_trades if legacy_fx(r).get("provisional")]}
             if kind in ("all", "performance"):
                 section["performance"] = performance(closed)
+                section["cashflow"] = cash_summary(cash_closed, ccy)
                 section["by_account"] = [
                     {"account_id": aid, "name": (accounts.get(aid) or {}).get("name", "Unassigned"),
+                     "cashflow": cash_summary([r for r in cash_closed if r.get("account_id") == aid], ccy),
                      **performance([r for r in closed if r.get("account_id") == aid])}
                     for aid in dict.fromkeys(r.get("account_id") for r in group)
                 ]
-            if kind in ("all", "open_positions"):
+            if kind in ("all", "performance", "open_positions"):
                 section["open_positions"] = [
-                    {k: r.get(k) for k in ("id", "account_id", "position_id", "symbol", "direction", "quantity", "entry_price", "entry_time", "stop_price", "take_profit")}
-                    for r in group if r["status"] == "open"][:500]
+                    {**{k: r.get(k) for k in ("id", "account_id", "position_id", "symbol", "direction", "quantity", "entry_price", "entry_time", "stop_price", "take_profit", "quote_currency", "fx_metadata")},
+                     "valuation": unrealised(r, ccy, marks[r["id"]]["price"], marks[r["id"]].get("fx"), marks[r["id"]].get("entry_fx"),
+                                             marks[r["id"]]["as_of"], marks[r["id"]].get("quote_currency")) if r["id"] in marks else None}
+                    for r in group if r["status"] == "open" and not is_dividend(r)][:500]
                 section["open_trade_count"] = sum(r["status"] == "open" for r in group)
                 section["open_positions_truncated"] = section["open_trade_count"] > 500
+                valued = [r["valuation"]["unrealised_pnl"] for r in section["open_positions"] if r["valuation"] and r["valuation"]["unrealised_pnl"] is not None]
+                section["unrealised"] = {"priced_trades": len(valued), "open_trades": section["open_trade_count"],
+                                         "pnl": round(sum(valued), 2) if valued or not section["open_trade_count"] else None, "dividends_included": False}
+                if "cashflow" in section:
+                    section["total_return"] = {"realised_pnl": section["cashflow"]["realised_cash_pnl"],
+                                               "unrealised_pnl": section["unrealised"]["pnl"],
+                                               "pnl": round(section["cashflow"]["realised_cash_pnl"] + sum(valued), 2)
+                                                      if len(valued) == section["open_trade_count"] and not section["cashflow"]["unconverted_record_ids"] else None,
+                                               "complete": len(valued) == section["open_trade_count"] and not section["cashflow"]["unconverted_record_ids"]}
             grade_counts, mood, categories, discipline_months = Counter(), [], defaultdict(list), defaultdict(lambda: Counter())
             planned_count = reviewed_count = both_count = 0
             for row in closed if kind in ("all", "categories", "discipline") else []:
@@ -129,7 +190,7 @@ def generate_report(kind: str = "all", account_id: int | None = None, start_date
                 planned_count += planned
                 reviewed_count += bool(review)
                 both_count += bool(review) and planned
-                month = (row.get("entry_time") or "Unknown")[:7]
+                month = (row.get("exit_time") or "Unknown")[:7]
                 discipline_months[month].update({"trades": 1, "planned": int(planned), "reviewed": int(bool(review))})
                 if review:
                     if review.get("grade"):

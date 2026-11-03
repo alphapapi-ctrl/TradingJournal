@@ -24,11 +24,21 @@ def get_trade(trade_id):
     return fetch_one("SELECT * FROM trades WHERE id=?", (trade_id,))
 
 def insert_trade(trade: dict) -> int:
+    trade = dict(trade)
+    for key, default in (("trade_type", None), ("quote_currency", None), ("fx_metadata", None), ("is_test", 0)):
+        trade.setdefault(key, default)
+    for key in ("raw_data", "fx_metadata"):
+        if isinstance(trade.get(key), dict):
+            trade[key] = json.dumps(trade[key], allow_nan=False)
+    if trade.get("trade_type") == "dividend":
+        from utils.cashflows import validate_money
+        account = fetch_one("SELECT currency FROM accounts WHERE id=?", (trade.get("account_id"),))
+        validate_money(trade, account["currency"] if account else "UNASSIGNED")
     return execute("""
         INSERT INTO trades (account_id, broker_trade_id, broker, symbol, direction, entry_price, exit_price,
-            entry_time, exit_time, quantity, pnl, commission, swap, raw_data, status)
+            entry_time, exit_time, quantity, pnl, commission, swap, raw_data, status, trade_type, quote_currency, fx_metadata, is_test)
         VALUES (:account_id, :broker_trade_id, :broker, :symbol, :direction, :entry_price, :exit_price,
-            :entry_time, :exit_time, :quantity, :pnl, :commission, :swap, :raw_data, :status)
+            :entry_time, :exit_time, :quantity, :pnl, :commission, :swap, :raw_data, :status, :trade_type, :quote_currency, :fx_metadata, :is_test)
     """, trade)
 
 def upsert_trade_from_broker(trade: dict) -> tuple[int, bool]:
@@ -39,12 +49,24 @@ def upsert_trade_from_broker(trade: dict) -> tuple[int, bool]:
             (trade["broker_trade_id"], trade.get("broker", ""), trade.get("account_id"))
         )
         if existing:
+            old = get_trade(existing["id"])
+            from utils.cashflows import is_dividend, legacy_fx
+            if is_dividend(old) or legacy_fx(old).get("reconciled"):
+                if is_dividend(old) != is_dividend(trade):
+                    raise ValueError("Broker ID collides with a different record type")
+                return existing["id"], False
             execute("""
                 UPDATE trades SET exit_price=?, exit_time=?, pnl=?, commission=?, swap=?, status=?, updated_at=datetime('now')
                 WHERE id=?
             """, (trade.get("exit_price"), trade.get("exit_time"), trade.get("pnl"),
                   trade.get("commission", 0), trade.get("swap", 0), trade.get("status", "closed"),
                   existing["id"]))
+            for key in ("trade_type", "quote_currency", "fx_metadata", "raw_data", "is_test"):
+                if key in trade:
+                    value = trade[key]
+                    if isinstance(value, dict):
+                        value = json.dumps(value, allow_nan=False)
+                    execute(f"UPDATE trades SET {key}=? WHERE id=?", (value, existing["id"]))
             return existing["id"], False
     trade.setdefault("account_id", None)
     trade.setdefault("broker_trade_id", None)
@@ -67,6 +89,19 @@ def price_pnl(trade, exit_price, quantity):
     if trade.get("instrument_spec_id"):
         from journal_mcp.neo import validate_trade_economics
         multiplier = validate_trade_economics(trade)["account_point_value"]
+    else:
+        from utils.cashflows import quote_currency, legacy_fx, fx_observation
+        account = fetch_one("SELECT currency FROM accounts WHERE id=?", (trade.get("account_id"),))
+        account_currency = account["currency"] if account else None
+        if account_currency and quote_currency(trade, account_currency) != account_currency:
+            fx = legacy_fx(trade)
+            if len(fx.get("entry_lots", [])) > 1:
+                raise ValueError("Multiple dated entry lots require explicit reconciled account-currency P&L when editing a trade")
+            if not fx.get("entry") or not fx.get("exit"):
+                raise ValueError("Cross-currency close requires explicit account-currency P&L or dated entry/exit FX; quote P&L cannot be labelled as account P&L")
+            entry = fx_observation(fx["entry"], trade["entry_time"])["account_per_quote"]
+            exit_rate = fx_observation(fx["exit"], trade.get("exit_time"))["account_per_quote"]
+            return round((exit_price * exit_rate - trade["entry_price"] * entry) * quantity * (1 if trade["direction"] == "LONG" else -1), 4)
     return round((exit_price - trade["entry_price"]) * quantity * (1 if trade["direction"] == "LONG" else -1) * multiplier, 4)
 
 def close_trade(trade_id, exit_price: float, exit_time: str = None,
@@ -75,10 +110,13 @@ def close_trade(trade_id, exit_price: float, exit_time: str = None,
     t = get_trade(trade_id)
     if not t:
         raise ValueError(f"Trade #{trade_id} not found")
+    if t.get("trade_type") == "dividend":
+        raise ValueError("Dividend cash events cannot be closed or reopened as price trades")
     qty  = float(t.get("quantity") or 0)
     ep   = float(t.get("entry_price") or 0)
     sign = 1 if t["direction"] == "LONG" else -1
     if pnl is None:
+        t["exit_time"] = exit_time or datetime.now().isoformat(timespec="seconds")
         pnl = price_pnl(t, exit_price, qty)
     new_comm = float(t.get("commission") or 0) + abs(extra_commission)
     execute("""UPDATE trades SET exit_price=?, exit_time=?, pnl=?, commission=?,
@@ -107,6 +145,7 @@ def partial_close_trade(trade_id, close_qty: float, exit_price: float,
 
     ep   = float(t.get("entry_price") or 0)
     sign = 1 if t["direction"] == "LONG" else -1
+    t["exit_time"] = exit_time or datetime.now().isoformat(timespec="seconds")
     pnl  = price_pnl(t, exit_price, close_qty)
 
     orig_comm   = float(t.get("commission") or 0)
@@ -135,6 +174,8 @@ def partial_close_trade(trade_id, close_qty: float, exit_price: float,
     new_id = insert_trade(closed_part)
     execute("UPDATE trades SET instrument_spec_id=?,sizing_assumptions=? WHERE id=?",
             (t.get("instrument_spec_id"), t.get("sizing_assumptions"), new_id))
+    execute("UPDATE trades SET quote_currency=?,fx_metadata=?,is_test=? WHERE id=?",
+            (t.get("quote_currency"), t.get("fx_metadata"), t.get("is_test", 0), new_id))
 
     # Keep the closed slice in the same merged position (if any) so it journals as one unit
     if t.get("position_id"):
@@ -154,6 +195,14 @@ def partial_close_trade(trade_id, close_qty: float, exit_price: float,
 def reopen_trade(trade_id):
     """Mark a trade open again, clearing exit data (fix accidental closes)."""
     t = get_trade(trade_id)
+    if t and t.get("trade_type") == "dividend":
+        raise ValueError("Dividend cash events cannot be reopened")
+    if t and t.get("fx_metadata"):
+        from utils.cashflows import object_value
+        metadata = object_value(t["fx_metadata"])
+        if metadata.get("exit"):
+            metadata.setdefault("previous_exits", []).append(metadata.pop("exit"))
+            execute("UPDATE trades SET fx_metadata=? WHERE id=?", (json.dumps(metadata), trade_id))
     execute("""UPDATE trades SET status='open', exit_price=NULL, exit_time=NULL,
                pnl=0, updated_at=datetime('now') WHERE id=?""", (trade_id,))
     if t and t.get("position_id"):
@@ -220,6 +269,8 @@ def merge_trades_into_position(trade_ids: list[int], notes: str = "",
 
     if not trades:
         raise ValueError("No valid trades found")
+    if any(t.get("trade_type") == "dividend" for t in trades):
+        raise ValueError("Dividend cash events cannot be merged into price positions")
 
     if len({t.get('account_id') for t in trades}) != 1:
         raise ValueError('Cannot merge trades from different accounts')
